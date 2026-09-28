@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Launch the teleop node with config/teleop.yaml with launch arguments:
+
+      ros2 launch hsa_ros2 teleop.launch.xml                       # preview only
+      ros2 launch hsa_ros2 teleop.launch.xml execute:=true         # MOVES THE ARM
+      ros2 launch hsa_ros2 teleop.launch.xml input_source:=fake_sine
+
+  Note: For a recording session run the node with `ros2 run` in its own terminal instead and
+  use this file only for headless tests (fake_sine) or when the recorder is driven another way.
+-->
+<launch>
+  <arg name="execute" default="false" description="Publish chunks to the streaming controller (moves the arm)"/>
+  <arg name="input_source" default="spacemouse" description="spacemouse | fake_sine | none"/>
+  <arg name="config" default="$(find-pkg-share hsa_ros2)/config/teleop.yaml"/>
+
+  <node pkg="hsa_ros2" exec="spacemouse_teleop" name="spacemouse_teleop" output="screen">
+    <param from="$(var config)"/>
+    <param name="execute" value="$(var execute)"/>
+    <param name="input_source" value="$(var input_source)"/>
+  </node>
+</launch>

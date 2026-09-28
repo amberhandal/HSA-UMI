@@ -1,0 +1,45 @@
+# Parameters for spacemouse_teleop.  Load with:
+#   ros2 run hsa_ros2 spacemouse_teleop --ros-args --params-file <this file>
+# or through launch/teleop.launch.xml.  Any value here can still be overridden on the command
+# line with -p name:=value (later settings win).
+#
+# The `/**:` key means "apply to every node this file is given to"; `ros__parameters:` is the
+# required wrapper under it.  Dotted parameter names (workspace.x_min) become nested keys.
+/**:
+  ros__parameters:
+    control_hz: 10.0
+    base_frame: fer_link0          # the FER's base link (fr3_link0 on an FR3)
+    tcp_frame: polyumi_tcp         # the wrist plate frame published by the arm bringup
+    execute: false                 # false = preview only.  Set true ONLY when the controller is active.
+    chunk_len: 2
+
+    max_pos_speed: 0.20            # m/s at full puck deflection (old demo default)
+    max_rot_speed: 0.15            # rad/s at full puck deflection (old demo default)
+
+    workspace:                     # base-frame box the target is clipped to (old WORKSPACE_* constants)
+      x_min: 0.2
+      x_max: 0.9
+      y_min: -0.4
+      y_max: 0.4
+      z_min: 0.05
+      z_max: 0.5
+
+    input_source: spacemouse       # spacemouse | fake_sine | none
+    spacemouse:
+      deadzone: 0.0
+      rotation_button: 0           # left button held -> rotation mode (translation locked)
+      z_button: 1                  # right button held -> vertical motion allowed
+    fake_sine:
+      period_s: 6.0
+      amplitude: 0.4
+
+    wrist:
+      enabled: false               # publish /hsa/target_servo every tick
+      setpoint_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]         # "soft" / neutral setpoint
+      stiff_setpoint_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # 'x' key toggles to this one
+
+    recorder_service_prefix: /hsa_recorder
+    teleop_target_topic: /hsa/teleop_target
+    stage_topic: /hsa/stage
+    wrist_target_topic: /hsa/target_servo
+    preview_topic: /polyumi/target_poses_preview
