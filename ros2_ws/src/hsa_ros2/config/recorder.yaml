@@ -1,0 +1,31 @@
+# Parameters for demo_recorder. Load with --params-file (launch/desk_test.launch.xml does).
+/**:
+  ros__parameters:
+    output_dir: ~/hsa_data/session      # one directory per dataset; the recorder appends across restarts
+    image_topic: /camera/color/image_raw
+    base_frame: fer_link0
+    tcp_frame: hsa_tcp
+    latency:
+      camera: 0.030                     # photon -> header.stamp. ESTIMATE (half the 33 ms exposure); measure with latency_probe mode:=camera and keep equal to inference.yaml latency.gopro
+      proprio: 0.001                    # libfranka stamps at read (UMI's value, not re-measured)
+    store_every_n_frames: 1             # 1 -> store at the camera rate (30 Hz => obs_down_sample_steps: 3)
+    teleop_target_topic: /hsa/teleop_target
+    stage_topic: /hsa/stage
+    servo:
+      enabled: false                    # true once the wrist bridge publishes /hsa/servo_state
+      topic: /hsa/servo_state
+    wrench:
+      enabled: false                    # true on the station (needs the Franka state broadcaster)
+      topic: /franka_robot_state_broadcaster/external_wrench_in_base_frame
+    max_target_age_s: 0.5
+    buffers:
+      seconds: 2.0
+    min_steps: 46                       # warn on shorter episodes (UMI's sampler draws nothing from them)
+    task_name: ''
+    plan: ''                            # CSV, any columns, one row per episode (grid cells, wrist, stiffness, ...);
+                                        #   rows advance when an episode is saved, 'n' skips one, all columns go to the sidecar
+    condition: ''                       # free-form tag for the next episodes: ros2 param set /hsa_recorder condition 'stiff'
+    advance_plan_on_save: true
+    wrist_set: ''
+    wrist_hours: 0.0
+    notes: ''

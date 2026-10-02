@@ -1,13 +1,9 @@
 """
 Python packaging for hsa_ros2.
 
-* ``data_files`` copies package.xml, the launch files and the config files into the *install*
-  tree (``install/hsa_ros2/share/hsa_ros2/...``).  That is where ``ros2 launch`` and
-  ``$(find-pkg-share hsa_ros2)`` look, so a launch or yaml file you forget to list here is
-  simply invisible after ``colcon build``.
-* ``entry_points`` turns a Python function into an executable that ``ros2 run hsa_ros2 <name>``
-  can start.  ``spacemouse_teleop = hsa_ros2.spacemouse_teleop:main`` means "the command
-  spacemouse_teleop runs main() in hsa_ros2/spacemouse_teleop.py".
+``data_files`` copies package.xml, launch, rviz and config into the install share tree, where ``ros2 launch``
+and ``$(find-pkg-share hsa_ros2)`` look: a file not listed here is invisible after ``colcon build``.
+``entry_points`` makes each ``name = module:function`` runnable as ``ros2 run hsa_ros2 <name>``.
 """
 
 from pathlib import Path
@@ -45,6 +41,10 @@ setup(
     entry_points={
         'console_scripts': [
             'spacemouse_teleop = hsa_ros2.spacemouse_teleop:main',
+            'demo_recorder = hsa_ros2.demo_recorder:main',
+            'fake_camera = hsa_ros2.fake_camera:main',
+            'export_dataset = hsa_ros2.export_dataset:main',
+            'diag_stats = hsa_ros2.diag_stats:main',
         ],
     },
 )
