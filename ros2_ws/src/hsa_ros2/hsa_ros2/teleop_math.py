@@ -1,9 +1,8 @@
 """
 The pure arithmetic of SpaceMouse teleoperation.
 
-Everything here takes numpy arrays and returns numpy arrays, so it can be unit-tested in a
-plain Python venv (``pytest test/test_teleop_math.py``) without ROS, a robot, or a SpaceMouse.
-The node (spacemouse_teleop.py) is what read inputs, call these functions, and publishes the result.
+Numpy in, numpy out, so it is unit-testable in a plain venv (``pytest test/test_teleop_math.py``) without
+ROS, a robot or a SpaceMouse; spacemouse_teleop.py reads the inputs and publishes the results.
 
 Pose convention: a 6-vector ``[x, y, z, rx, ry, rz]`` in meters and a *rotation vector*
 (axis-angle, scipy's ``rotvec``) expressed in the robot base frame.
@@ -53,16 +52,10 @@ def integrate_target(
     """
     Advance the commanded target pose by one control tick.
 
-    The SpaceMouse is a *velocity* device: a deflection of 1.0 means "move at max speed". One tick
-    therefore moves the target by ``max_speed / hz`` at full deflection. The target is what the
-    controller is told to hold; the arm follows it through the impedance spring.
-
-    Button semantics:
-
-    * ``rotation_mode`` (left button held): the puck rotates the tool and translation is locked.
-      Otherwise translation only, and rotation is locked.
-    * ``z_enabled`` (right button held): vertical translation allowed. Otherwise z is locked so
-      an accidental push does not drive the tool into the table.
+    The SpaceMouse is a velocity device: full deflection moves the target by ``max_speed / hz`` per tick.
+    ``rotation_mode`` (left button held) rotates the tool and locks translation; otherwise translation
+    only. ``z_enabled`` (right button held) allows vertical motion; otherwise z is locked so an accidental
+    push does not drive the tool into the table.
 
     :param target: current ``[x, y, z, rx, ry, rz]`` target.
     :param axes: output of :func:`map_spacemouse_axes`.
@@ -98,22 +91,48 @@ def clamp_workspace(target: np.ndarray, box: dict) -> np.ndarray:
     return target
 
 
+def extrapolate_chunk(target: np.ndarray, prev_target: np.ndarray | None, n: int, box: dict) -> list[np.ndarray]:
+    """
+    Build the ``n`` waypoints of a chunk: the target, then the target continued along its last step.
+
+    Waypoint ``k`` is the target moved by ``k`` times the last tick's displacement (position linearly,
+    orientation by composing the last tick's rotation ``k`` times), clipped to the box. A chunk that
+    merely repeats the target hands the controller's monotone interpolant a zero tangent, so the
+    reference would decelerate to a stop every tick; continuing along the velocity keeps it
+    velocity-continuous, as a policy's chunk is. With no previous target (a fresh seed) or a zero step
+    the chunk is a plain hold.
+    """
+    target = np.asarray(target, dtype=np.float64)
+    if n <= 1 or prev_target is None:
+        return [target.copy() for _ in range(max(1, n))]
+    prev = np.asarray(prev_target, dtype=np.float64)
+    delta_pos = target[:3] - prev[:3]
+    rot_t = st.Rotation.from_rotvec(target[3:])
+    delta_rot = rot_t * st.Rotation.from_rotvec(prev[3:]).inv()
+    chunk = []
+    for k in range(n):
+        pose = np.empty(6)
+        pose[:3] = target[:3] + k * delta_pos
+        pose[3:] = ((delta_rot**k) * rot_t).as_rotvec() if k else target[3:]
+        chunk.append(clamp_workspace(pose, box))
+    return chunk
+
+
 def pose6_to_quat(pose6: np.ndarray) -> np.ndarray:
-    """Rotation-vector pose -> quaternion ``[qx, qy, qz, qw]`` (the order geometry_msgs uses)."""
+    """Convert a rotation-vector pose to a quaternion ``[qx, qy, qz, qw]`` (the order geometry_msgs uses)."""
     return st.Rotation.from_rotvec(np.asarray(pose6)[3:]).as_quat()
 
 
 def quat_to_rotvec(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
-    """Quaternion (geometry_msgs order) -> rotation vector."""
+    """Convert a quaternion (geometry_msgs order) to a rotation vector."""
     return st.Rotation.from_quat([qx, qy, qz, qw]).as_rotvec()
 
 
 def fake_sine_axes(t: float, period_s: float = 6.0, amplitude: float = 0.4) -> np.ndarray:
     """
-    A stand-in for the SpaceMouse: a slow circle in the base x-y plane, no rotation.
+    Stand in for the SpaceMouse with a slow circle in the base x-y plane, no rotation.
 
-    Used by ``input_source: fake_sine`` to test the whole ROS plumbing (TF lookup, chunk
-    publishing, preview, recorder hooks) on a desk with no device attached and, with
+    ``input_source: fake_sine`` uses it to exercise the ROS plumbing on a desk with no device and, with
     ``execute: false``, no arm. Amplitude is a fraction of max speed.
     """
     w = 2.0 * np.pi / period_s

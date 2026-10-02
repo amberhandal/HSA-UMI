@@ -1,26 +1,30 @@
 # Parameters for spacemouse_teleop.  Load with:
 #   ros2 run hsa_ros2 spacemouse_teleop --ros-args --params-file <this file>
-# or through launch/teleop.launch.xml.  Any value here can still be overridden on the command
-# line with -p name:=value (later settings win).
-#
-# The `/**:` key means "apply to every node this file is given to"; `ros__parameters:` is the
-# required wrapper under it.  Dotted parameter names (workspace.x_min) become nested keys.
+# or through launch/teleop.launch.xml; -p name:=value on the command line still overrides (later wins).
+# `/**:` applies to every node given this file; dotted names (workspace.x_min) become nested keys.
 /**:
   ros__parameters:
-    control_hz: 10.0
+    control_hz: 50.0               # ticks per second. After a release the target still moves for one to two ticks
+                                   # (20-40 ms at 50 Hz, 100-200 ms at 10 Hz). Does not set the recorder's data rate.
     base_frame: fer_link0          # the FER's base link (fr3_link0 on an FR3)
-    tcp_frame: polyumi_tcp         # the wrist plate frame published by the arm bringup
+    tcp_frame: hsa_tcp             # the HSA wrist plate (neutral servo pose), published by the arm bringup
     execute: false                 # false = preview only.  Set true ONLY when the controller is active.
-    chunk_len: 2
+    chunk_len: 6                   # waypoints per chunk: the target, then 5 more along the puck's velocity (120 ms of
+                                   # cover at 50 Hz if a chunk is late; a hold would stop the reference every tick)
+    reseed_distance: 0.15          # m; beyond this the target snaps back onto the arm (home move, e-stop,
+                                   # reach limit, hand on the arm)
 
-    max_pos_speed: 0.20            # m/s at full puck deflection (old demo default)
-    max_rot_speed: 0.15            # rad/s at full puck deflection (old demo default)
+    max_pos_speed: 0.20            # m/s at full puck deflection
+    max_rot_speed: 0.15            # rad/s at full puck deflection
 
-    workspace:                     # base-frame box the target is clipped to (old WORKSPACE_* constants)
-      x_min: 0.2
-      x_max: 0.9
-      y_min: -0.4
-      y_max: 0.4
+    workspace:                     # base-frame box the TCP target is clipped to
+      # Sized for the bare flange and well inside the FER's 0.855 m reach: a target the arm cannot reach
+      # has the controller pushing at full clip force. Re-derive when the wrist goes on: its plate sits
+      # PLATE_HEIGHT_Z (0.15 m) beyond the flange, so x_max can grow by about that much.
+      x_min: 0.25
+      x_max: 0.72
+      y_min: -0.35
+      y_max: 0.35
       z_min: 0.05
       z_max: 0.5
 
