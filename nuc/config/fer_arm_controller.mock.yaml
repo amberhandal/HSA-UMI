@@ -1,0 +1,20 @@
+# fer_arm_controller for MOCK HARDWARE (fer_bringup.launch.py use_fake_hardware:=true): the
+# position-commanded variant, because mock_components/GenericSystem mirrors position commands into its
+# state and ignores effort. Never for the robot. From NU-MSR's ros2_controllers.yaml, plus `type` (see
+# fer_arm_controller.yaml).
+fer_arm_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    joints:
+      - fer_joint1
+      - fer_joint2
+      - fer_joint3
+      - fer_joint4
+      - fer_joint5
+      - fer_joint6
+      - fer_joint7

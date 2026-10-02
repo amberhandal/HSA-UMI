@@ -84,3 +84,20 @@ def test_unanswered_call_is_a_failure():
     node.create_client.return_value.call_async.return_value.done.return_value = False
     with patch.object(set_payload.rclpy, 'spin_until_future_complete'):
         assert set_payload.set_payload(node, timeout_s=1.0) is not None
+
+
+def test_calib_module_is_swappable_for_the_hsa_wrist():
+    """
+    `--calib hsa_calib` must fill the request from hsa_calib, or the FER's bringup would push the FR3 gripper's payload.
+
+    The three names every calibration module exposes are the whole contract; this pins that the
+    request is built through them and not through a module-level tcp_calib reference.
+    """
+    import hsa_calib
+
+    req = set_payload._request(hsa_calib)
+
+    assert req.mass == pytest.approx(hsa_calib.PAYLOAD_MASS)
+    assert req.mass != pytest.approx(tcp_calib.PAYLOAD_MASS)
+    assert list(req.center_of_mass) == pytest.approx(list(hsa_calib.payload_com_flange()))
+    assert list(req.load_inertia) == pytest.approx(list(hsa_calib.payload_inertia_flange()))

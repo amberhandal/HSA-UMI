@@ -1,0 +1,18 @@
+# HSA-UMI: the CPU governor for robot sessions. Ubuntu leaves the laptop on `powersave` even on
+# mains, which showed up as inference round trips of 0.7-0.9 s where the model itself took 0.19 s.
+# Install once, then `sudo systemctl start hsa-performance-governor` before a session (or enable it
+# to run at boot):
+#     sudo cp config/laptop/hsa-performance-governor.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#     sudo systemctl enable --now hsa-performance-governor
+# `sudo systemctl stop hsa-performance-governor` puts powersave back.
+[Unit]
+Description=HSA-UMI: performance CPU governor for robot sessions
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g"; done'
+ExecStop=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo powersave > "$g"; done'
+
+[Install]
+WantedBy=multi-user.target

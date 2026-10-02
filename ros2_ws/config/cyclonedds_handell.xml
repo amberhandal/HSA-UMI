@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS config for handell (Amber's Kilted laptop) on the HSA lab's Franka station link.
+  TEMPLATE: config/env.handell.sh substitutes the literal enp0s31f6 and 192.168.18.62 below with
+  today's interface and lease, writes the result under ~/.local/state/hsa/ and points
+  CYCLONEDDS_URI at it. Edit this file, not the copy, and keep those two tokens as they are.
+
+  SPDP multicast is allowed (data still goes unicast): the station hands the laptop a DHCP lease,
+  so a unicast-only peer list would silently stop discovering after a lease change. The peers
+  below are a second path. Pinned to the wired port so nothing discovers over WiFi.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enp0s31f6" multicast="true" />
+      </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.18.1" />
+        <Peer address="192.168.18.62" />
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

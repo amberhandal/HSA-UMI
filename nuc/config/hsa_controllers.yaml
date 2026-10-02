@@ -1,0 +1,65 @@
+# HSA-UMI's ros2_control controllers, declared for the station's controller_manager and loaded by the
+# spawner in fer_inference.launch.py.
+#
+# The instance is named polyumi_cartesian_impedance_controller and listens on /polyumi/target_poses_traj
+# because every producer (policy_client_node, the teleop, the probes) and every doc names those: wiring,
+# not branding, and renaming them would fork the client for nothing.
+#
+# Spawned INACTIVE. It claims the same <joint>/effort command interfaces as fer_arm_controller, so
+# exactly one of the two can run: activating this one (execute_arm:=true, or /polyumi/home's
+# hand-back) deactivates the joint-trajectory controller.
+#
+# WHY EACH NUMBER IS WHAT IT IS lives upstream, in
+# external/franka_streaming_impedance_controller/config/controllers.example.yaml. This file is the
+# deployment: it repeats the values so a gain change here is a change to OUR robot.
+
+# `type` is here, not on the spawner's command line: Jazzy's and Kilted's spawner has no -t flag
+# and reads the type from the parameter file, under the controller's own key.
+polyumi_cartesian_impedance_controller:
+  ros__parameters:
+    type: franka_streaming_impedance_controller/CartesianImpedanceController
+    arm_id: fer
+    base_frame: fer_link0
+    # The policy's body frame: the wrist plate at the neutral servo setpoint, a static child of fer_link8
+    # published by fer_bringup.launch.py from nuc/hsa_calib.py (the one definition of the geometry). The
+    # controller moves the measured pose and the Jacobian onto it with one TF lookup at activation.
+    tcp_frame: hsa_tcp
+    # Absolute, not the controller's node-relative default: polyumi_ros2.target_chunk publishes
+    # here, and the teleop, the probes and the policy client must all land on the same topic.
+    target_topic: /polyumi/target_poses_traj
+
+    # --- Impedance gains ---
+    # serl_franka_controllers' defaults, unchanged on purpose so a difference in behaviour is the wrist
+    # and not the gains. Expect to retune translational_clip first: it is the force ceiling (stiffness x
+    # clip = 20 N here), and insertion through a compliant wrist may need more -- raise it together with
+    # the collision force thresholds below.
+    translational_stiffness: 2000.0
+    translational_damping: 89.0       # ~critical for 2000 N/m: 2*sqrt(2000) = 89.4
+    rotational_stiffness: 150.0
+    rotational_damping: 7.0           # deliberately under-damped
+    translational_clip: 0.01          # metres -> 20 N ceiling at the stiffness above
+    rotational_clip: 0.05             # radians
+
+    translational_ki: 0.0
+    rotational_ki: 0.0
+
+    # The pull toward the posture the controller activated in. The nullspace projector is damped
+    # (lambda 0.2, serl's), so a share leaks through as a flange force growing with the distance from
+    # that posture: 10 hit the 20 N ceiling 25 cm out and stalled the arm, serl's 0.2 let the elbow
+    # drift to its joint-3 limit, 1.0 leaks under 5 N over the box. Joint 1 gets its own value because
+    # its deviation is large whenever the arm turns. Live-tunable. Method: docs/hsa-smoothness-fixes.md.
+    nullspace_stiffness: 1.0
+    joint1_nullspace_stiffness: 10.0
+
+    max_pos_speed: 1.0                # m/s
+    max_rot_speed: 3.14               # rad/s
+
+    # --- Collision reflex thresholds ---
+    # franka_example_controllers' DefaultRobotBehavior; the robot's factory defaults are lower. Raise
+    # upper_force first, only as far as the task needs, and always alongside translational_clip.
+    # Torques are per joint (7), forces are (x, y, z, R, P, Y).
+    collision:
+      lower_torque_thresholds: [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds: [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_force_thresholds: [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds: [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]

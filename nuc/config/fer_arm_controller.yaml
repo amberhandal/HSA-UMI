@@ -1,0 +1,31 @@
+# fer_arm_controller for the ROBOT: the joint-trajectory controller the home service moves the arm
+# through, spawned by fer_bringup.launch.py. Effort-commanded, so it holds the same <joint>/effort
+# interfaces the streaming impedance controller claims and the two switch without a libfranka mode change.
+#
+# NU-MSR's franka_fer_moveit_config/config/fer_real_controllers.yaml (m-elwin/franka_ros2, branch panda),
+# gains untouched, plus `type` under the controller's own key: Jazzy's and Kilted's spawner has no -t
+# flag and reads the type from the parameter file only, while NU-MSR's file keeps it under controller_manager.
+fer_arm_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position
+      - velocity
+    joints:
+      - fer_joint1
+      - fer_joint2
+      - fer_joint3
+      - fer_joint4
+      - fer_joint5
+      - fer_joint6
+      - fer_joint7
+    gains:
+      fer_joint1: { p: 600., d: 30., i: 0., i_clamp: 1. }
+      fer_joint2: { p: 600., d: 30., i: 0., i_clamp: 1. }
+      fer_joint3: { p: 600., d: 30., i: 0., i_clamp: 1. }
+      fer_joint4: { p: 600., d: 30., i: 0., i_clamp: 1. }
+      fer_joint5: { p: 250., d: 10., i: 0., i_clamp: 1. }
+      fer_joint6: { p: 150., d: 10., i: 0., i_clamp: 1. }
+      fer_joint7: { p: 50., d: 5., i: 0., i_clamp: 1. }

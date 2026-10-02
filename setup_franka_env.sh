@@ -141,5 +141,15 @@ else
   nmcli connection up "$FR3_NM_PROFILE"
 fi
 
+# --- HSA-UMI: the DDS switch shared with the station (nuc/station_env.sh reads the same variable) ---
+# Default cyclonedds; a host file (config/env.<host>.sh) sets HSA_DDS=fastdds when the control PC
+# has no rmw_cyclonedds_cpp (the NU-MSR station). Both sides must agree; the laptop side is decided here.
+: "${HSA_DDS:=cyclonedds}"
+if [ "$HSA_DDS" = fastdds ]; then
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  unset CYCLONEDDS_URI
+  echo "[setup_franka_env] HSA_DDS=fastdds -> RMW=$RMW_IMPLEMENTATION (no CycloneDDS config)"
+fi
+
 echo "[setup_franka_env] RMW=$RMW_IMPLEMENTATION ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
 echo "[setup_franka_env] CYCLONEDDS_URI=$CYCLONEDDS_URI"

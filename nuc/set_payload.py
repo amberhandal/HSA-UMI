@@ -17,9 +17,15 @@ Self-contained (no PolyUMI package deps) so it runs from a plain clone on the NU
 
     source /opt/ros/humble/setup.bash
     source ~/franka_ws/install/setup.bash
-    python3 nuc/set_payload.py [timeout_s]
+    python3 nuc/set_payload.py [timeout_s] [--calib MODULE]
+
+``--calib`` names the module beside this script that owns the numbers: ``tcp_calib`` (the default,
+the gripper on the FR3) or ``hsa_calib`` (the HSA wrist on the FER). Every calibration module exposes
+the same three names read below; which end effector they describe is the module's business, not this script's.
 """
 
+import argparse
+import importlib
 from pathlib import Path
 import sys
 
@@ -35,16 +41,16 @@ SERVICE = '/service_server/set_load'
 DEFAULT_TIMEOUT_S = 60.0
 
 
-def _request() -> SetLoad.Request:
-    """Fill a SetLoad request from tcp_calib, which owns every number in it."""
+def _request(calib=tcp_calib) -> SetLoad.Request:
+    """Fill a SetLoad request from the calibration module, which owns every number in it."""
     req = SetLoad.Request()
-    req.mass = float(tcp_calib.PAYLOAD_MASS)
-    req.center_of_mass = [float(v) for v in tcp_calib.payload_com_flange()]
-    req.load_inertia = [float(v) for v in tcp_calib.payload_inertia_flange()]
+    req.mass = float(calib.PAYLOAD_MASS)
+    req.center_of_mass = [float(v) for v in calib.payload_com_flange()]
+    req.load_inertia = [float(v) for v in calib.payload_inertia_flange()]
     return req
 
 
-def set_payload(node: Node, timeout_s: float) -> str | None:
+def set_payload(node: Node, timeout_s: float, calib=tcp_calib) -> str | None:
     """
     Call SetLoad once and report what went wrong, or None if it took.
 
@@ -52,13 +58,14 @@ def set_payload(node: Node, timeout_s: float) -> str | None:
 
     :param timeout_s: budget for the service appearing AND for the call itself. franka_bringup may
         still be starting, so waiting is normal; waiting forever is not, since bringup blocks on it.
+    :param calib: the calibration module supplying the payload (see ``--calib``).
     :returns: a human-readable reason, or None on success.
     """
     client = node.create_client(SetLoad, SERVICE)
     if not client.wait_for_service(timeout_sec=timeout_s):
         return f'{SERVICE} never appeared within {timeout_s:.0f}s — is franka_bringup up, and is FCI enabled?'
 
-    future = client.call_async(_request())
+    future = client.call_async(_request(calib))
     rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_s)
     if not future.done():
         return f'{SERVICE} did not answer within {timeout_s:.0f}s.'
@@ -75,14 +82,20 @@ def set_payload(node: Node, timeout_s: float) -> str | None:
 
 def main(argv=None) -> int:
     """Set the payload; return a shell exit code."""
-    argv = sys.argv[1:] if argv is None else argv
-    timeout_s = float(argv[0]) if argv else DEFAULT_TIMEOUT_S
+    parser = argparse.ArgumentParser(description='Push the end-effector payload to the FCI, once, at bringup.')
+    parser.add_argument('timeout_s', nargs='?', type=float, default=DEFAULT_TIMEOUT_S)
+    parser.add_argument(
+        '--calib', default='tcp_calib', help='calibration module beside this script (tcp_calib | hsa_calib)'
+    )
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    calib = importlib.import_module(args.calib)
+    timeout_s = args.timeout_s
 
     rclpy.init()
     node = rclpy.create_node('set_payload')
     try:
-        node.get_logger().info(f'[set_payload] {tcp_calib.describe_payload()}')
-        reason = set_payload(node, timeout_s)
+        node.get_logger().info(f'[set_payload] {calib.describe_payload()}')
+        reason = set_payload(node, timeout_s, calib)
         if reason is not None:
             node.get_logger().error(f'[set_payload] {reason}')
             return 1
@@ -90,8 +103,13 @@ def main(argv=None) -> int:
         return 0
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # The launch is shutting down around us; 130 tells the gate this was an interrupt.
+        sys.exit(130)

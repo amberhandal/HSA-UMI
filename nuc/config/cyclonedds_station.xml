@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  The STATION's CycloneDDS config, the counterpart of ros2_ws/config/cyclonedds_handell.xml.
+  deploy_station.sh rsyncs nuc/ to the station and nuc/station_env.sh points CYCLONEDDS_URI at this
+  file, so nothing is copied by hand. Versioned because the station is shared and this file is what
+  makes the laptop's nodes and the arm find each other.
+
+  The station's interface is the bridge br0 (192.168.18.1), which carries the laptop AND the robot
+  ports. Discovery multicast stays on because the laptop's address is a DHCP lease and may change;
+  data is unicast. The peers are the two addresses seen on 2026-09-28; a changed lease still works
+  through SPDP multicast.
+
+  Only used with HSA_DDS=cyclonedds. HSA_DDS=fastdds needs no file on either machine (on one L2
+  subnet FastDDS's multicast discovery works unconfigured) and is the fallback if the station has no
+  rmw_cyclonedds_cpp. See docs/hsa-arm-inference.md.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="br0" multicast="true" />
+      </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.18.62" />
+        <Peer address="192.168.18.1" />
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

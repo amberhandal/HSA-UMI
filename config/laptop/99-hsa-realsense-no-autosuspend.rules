@@ -1,0 +1,5 @@
+# HSA-UMI: keep the RealSense awake. With USB autosuspend on, the D435 stalled for up to 1.4 s at a
+# time during inference runs (docs/hsa-arm-inference.md, "The RealSense stalls now and then").
+# Intel's vendor id is 8086; the D435 is 0b07, the D435i 0b3a, the D405 0b5b. Install with
+#     sudo cp config/laptop/99-hsa-realsense-no-autosuspend.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b07|0b3a|0b5b", TEST=="power/control", ATTR{power/control}="on"
