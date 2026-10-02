@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RViz with the HSA-UMI layout: the arm from /robot_description, TF (fer_link0, fer_link8,
+  hsa_tcp), every commanded pose (/polyumi/target_poses_preview as axes, /hsa/teleop_target),
+  the external wrench and the camera. Works unchanged against the real arm and the mock arm,
+  since both publish the same description, TF and joint states.
+
+      source setup_franka_env.sh          # DDS + franka_description for the meshes
+      ros2 launch hsa_ros2 rviz.launch.xml
+
+  The meshes resolve through package://franka_description, which setup_franka_env.sh puts on the
+  path from ~/ws/franka; without it the arm shows as frames only.
+-->
+<launch>
+  <arg name="config" default="$(find-pkg-share hsa_ros2)/rviz/hsa.rviz"/>
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen" args="-d $(var config)"/>
+</launch>

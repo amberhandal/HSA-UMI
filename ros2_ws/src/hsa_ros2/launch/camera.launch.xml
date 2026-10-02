@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The wrist camera: a RealSense colour stream on /camera/color/image_raw, the topic the recorder
+  and the policy client both read.
+
+  640x480 is a 4:3 mode on purpose: the shared pixel contract (polyumi_ros2.camera_preproc:
+  centre-crop to 4:3, then INTER_AREA resize to 224x224) is then a pure resize with nothing
+  discarded, at record time and at inference alike. Colour only: depth, infrared and the IMU are
+  off, so the USB link carries one 28 MB/s stream.
+
+      ros2 launch hsa_ros2 camera.launch.xml
+      ros2 topic hz /camera/color/image_raw        # expect ~30 Hz, encoding rgb8
+-->
+<launch>
+  <arg name="serial_no" default="''" description="pick one camera by serial when several are plugged in"/>
+  <arg name="color_profile" default="640x480x30" description="WIDTHxHEIGHTxFPS; keep a 4:3 mode"/>
+
+  <!-- The node prefixes every stream with its camera_name parameter on top of its own node name,
+       so name="camera" lands the colour stream at /camera/camera/color/image_raw. The remaps put it
+       (and its camera_info) at /camera/color/..., the topic the recorder and the client read. -->
+  <node pkg="realsense2_camera" exec="realsense2_camera_node" name="camera" output="screen">
+    <remap from="/camera/camera/color/image_raw" to="/camera/color/image_raw"/>
+    <remap from="/camera/camera/color/camera_info" to="/camera/color/camera_info"/>
+    <param name="serial_no" value="$(var serial_no)"/>
+    <param name="enable_color" value="true"/>
+    <param name="rgb_camera.color_profile" value="$(var color_profile)"/>
+    <param name="rgb_camera.color_format" value="RGB8"/>
+    <param name="rgb_camera.enable_auto_exposure" value="true"/>
+    <param name="enable_depth" value="false"/>
+    <param name="enable_infra1" value="false"/>
+    <param name="enable_infra2" value="false"/>
+    <param name="enable_gyro" value="false"/>
+    <param name="enable_accel" value="false"/>
+    <param name="publish_tf" value="false"/>
+    <param name="initial_reset" value="false"/>
+  </node>
+</launch>

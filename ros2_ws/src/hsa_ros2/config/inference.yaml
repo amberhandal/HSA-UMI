@@ -1,0 +1,53 @@
+# policy_client_node config for the FER + HSA wrist: cadence, frames, camera and latencies.
+# Loaded by launch/inference.launch.xml. Only the keys set here are listed; every key is
+# documented in polyumi_ros2/config/inference.yaml.
+
+/**:
+  ros__parameters:
+    # --- Where the observation comes from ---
+    image_topic: /camera/color/image_raw       # camera.launch.xml; the recorder reads the same topic
+    base_frame: fer_link0
+    eef_frame: hsa_tcp                         # the wrist plate, published by fer_bringup.launch.py
+    control_hz: 10.0
+    n_obs_steps: 2
+    image_width: 224                           # the shared pixel contract: crop to 4:3 (a no-op at
+    image_height: 224                          # 640x480), then INTER_AREA resize -- same as the recorder
+
+    # --- Receding horizon ---
+    steps_per_inference: 8                     # one POST every 8 ticks = 0.8 s
+    n_action_steps: 16                         # request the whole 16-step chunk
+    temporal_ensemble_tau_s: 0.0
+
+    # --- Latencies, in seconds ---
+    latency:
+      # `gopro` is the client's name for the camera's photon -> header.stamp delay; here it is the
+      # RealSense's. ESTIMATE: realsense2_camera stamps from the device's own frame clock, so roughly
+      # half the 33 ms rolling exposure at 30 fps remains. Measure it with
+      #     ros2 launch hsa_ros2 camera.launch.xml
+      #     ros2 run polyumi_ros2 latency_probe --ros-args -p mode:=camera -p image_topic:=/camera/color/image_raw
+      # and keep recorder.yaml's latency.camera equal, so recorded and inference-time poses are
+      # aligned to the frame the same way.
+      gopro: 0.030
+      proprio: 0.001                           # libfranka stamps at read (UMI's value, not re-measured)
+      # How far the arm trails the impedance controller's equilibrium point. Inherited from an FR3
+      # deployment with the same controller and gains, not yet measured on the FER; re-measure once
+      # the wrist is mounted (its compliance adds to it) with
+      #     ros2 run polyumi_ros2 latency_probe --ros-args -p mode:=arm -p base_frame:=fer_link0 -p eef_frame:=hsa_tcp
+      arm_exec: 0.04
+      finger_cam: 0.0
+      piezo_mic: 0.0
+      gripper_exec: 0.0
+      gripper: 0.0
+
+    # --- No gripper ---
+    # agent_pos[7] is the gripper width. With no gripper the client substitutes the closed width (0.0)
+    # and warns once; the recorder writes zeros for robot0_gripper_width, so train and deploy agree.
+    require_gripper_state: false
+    gripper_max_width_m: 0.0812
+    gripper_min_width_m: 0.0
+
+    # --- Tactile channels: off (visuomotor policy) ---
+    send_tactile: false
+
+    buffers:
+      ee_pose_s: 1.0

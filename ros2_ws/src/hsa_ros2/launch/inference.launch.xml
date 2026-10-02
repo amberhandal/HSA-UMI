@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Laptop-side inference: the wrist camera + policy_client_node (+ Foxglove).
+
+  The arm's TF (fer_link0 -> ... -> hsa_tcp) arrives over DDS from the station; source
+  setup_franka_env.sh first. The policy server is wherever inference_server_url points: this
+  laptop's container by default (Option 2), or lamb (Option 1). See docs/hsa-arm-inference.md.
+
+    ros2 launch hsa_ros2 inference.launch.xml                          # log + preview only
+    ros2 launch hsa_ros2 inference.launch.xml execute_motion:=true     # publishes chunks to the arm
+    ros2 launch hsa_ros2 inference.launch.xml \
+        inference_server_url:=http://lamb.mech.northwestern.edu:8002/predict_cartesian/
+
+  Dry run on the arm: real server, execute_motion false, watch /polyumi/target_poses_preview in
+  Foxglove. Sane output sits near the current hsa_tcp with small step-to-step deltas.
+-->
+<launch>
+  <arg name="inference_server_url" default="http://localhost:8002/predict_cartesian/"/>
+  <!-- Off by default: the arm does NOT move until this is true. When true, each action chunk goes
+       out as a MultiDOFJointTrajectory on /polyumi/target_poses_traj for the station's streaming
+       controller, which must be ACTIVE there (fer_inference.launch.py execute_arm:=true). -->
+  <arg name="execute_motion" default="false"/>
+  <arg name="publish_preview" default="true"/>
+  <!-- Newest camera frame older than this drops the tick. 0 = auto (~50 ms, assumes a 60 Hz camera);
+       the RealSense runs at 30 Hz, so allow three periods. -->
+  <arg name="max_image_age_s" default="0.1"/>
+  <arg name="post_timeout_s" default="1.0"/>
+  <!-- Dry-run crutch for a laptop<->station clock skew; never for execution (fix chrony instead). -->
+  <arg name="tf_use_latest" default="false"/>
+  <!-- Start the RealSense here (false when camera.launch.xml is already running, e.g. for the recorder). -->
+  <arg name="camera" default="true"/>
+  <!-- foxglove_bridge on :8765. Off until `sudo apt install ros-kilted-foxglove-bridge`;
+       hsa_session.sh turns it on when the package is present. -->
+  <arg name="foxglove" default="false"/>
+  <arg name="inference_config" default="$(find-pkg-share hsa_ros2)/config/inference.yaml"/>
+
+  <include file="$(find-pkg-share hsa_ros2)/launch/camera.launch.xml" if="$(var camera)"/>
+
+  <include file="$(find-pkg-share foxglove_bridge)/launch/foxglove_bridge_launch.xml" if="$(var foxglove)">
+    <arg name="port" value="8765"/>
+    <arg name="capabilities"
+      value="['clientPublish','parameters','parametersSubscribe','services','connectionGraph','assets']"/>
+  </include>
+
+  <node pkg="polyumi_ros2" exec="policy_client_node" name="policy_client_node" output="screen">
+    <param from="$(var inference_config)"/>
+    <param name="inference_server_url" value="$(var inference_server_url)"/>
+    <param name="execute_motion" value="$(var execute_motion)"/>
+    <param name="publish_preview" value="$(var publish_preview)"/>
+    <param name="max_image_age_s" value="$(var max_image_age_s)"/>
+    <param name="post_timeout_s" value="$(var post_timeout_s)"/>
+    <param name="tf_use_latest" value="$(var tf_use_latest)"/>
+  </node>
+</launch>
