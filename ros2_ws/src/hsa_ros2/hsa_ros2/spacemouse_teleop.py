@@ -351,9 +351,14 @@ class SpacemouseTeleop(Node):
         def done(fut):
             try:
                 resp = fut.result()
-                (self.get_logger().info if resp.success else self.get_logger().error)(f'{name}: {resp.message}')
             except Exception as e:  # noqa: BLE001
                 self.get_logger().error(f'{name} failed: {e!r}')
+                return
+            # Two separate call sites: rclpy refuses to log from one line at a changing severity.
+            if resp.success:
+                self.get_logger().info(f'{name}: {resp.message}')
+            else:
+                self.get_logger().error(f'{name}: {resp.message}')
 
         future.add_done_callback(done)
 
