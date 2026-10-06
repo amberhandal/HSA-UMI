@@ -23,11 +23,13 @@
   <node pkg="hsa_ros2" exec="fake_camera" name="fake_camera" output="screen"/>
   <node pkg="hsa_ros2" exec="spacemouse_teleop" name="spacemouse_teleop" output="screen">
     <param from="$(var teleop_config)"/>
+    <param from="$(find-pkg-share hsa_ros2)/config/robots/fer.yaml"/>
     <param name="input_source" value="fake_sine"/>
     <param name="execute" value="false"/>
   </node>
   <node pkg="hsa_ros2" exec="demo_recorder" name="hsa_recorder" output="screen">
     <param from="$(var recorder_config)"/>
+    <param from="$(find-pkg-share hsa_ros2)/config/robots/fer.yaml"/>
     <param name="output_dir" value="$(var output_dir)"/>
     <param name="plan" value="$(var plan)"/>
   </node>

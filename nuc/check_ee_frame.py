@@ -6,7 +6,7 @@ The streaming controller converts O_T_EE onto ``hsa_tcp`` through ``fer_hand_tcp
 this repo publishes that must equal the F_T_EE set in Desk; nothing else notices when it does not
 (nuc/hsa_calib.py, "Where fer_hand_tcp comes from"). One-shot: read
 ``/franka_robot_state_broadcaster/robot_state`` once, compare ``f_t_ee`` with hsa_calib's transform, exit 0
-on a match and 1 on a mismatch (fer_bringup.launch.py aborts on 1). A message with no usable ``f_t_ee`` is
+on a match and 1 on a mismatch (bringup.launch.py aborts on 1). A message with no usable ``f_t_ee`` is
 logged as "cannot verify" and exits 0. Self-contained, so it runs from a plain clone on the station:
 
     python3 nuc/check_ee_frame.py [timeout_s] [--calib hsa_calib] [--desk-end-effector none|hand]

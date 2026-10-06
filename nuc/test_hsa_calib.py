@@ -99,3 +99,26 @@ def test_bare_flange_preset_puts_the_tcp_on_the_flange_with_no_payload(monkeypat
     finally:
         monkeypatch.delenv('HSA_TOOL')
         importlib.reload(hsa_calib)
+
+
+def test_payload_is_the_sum_of_the_weighed_parts():
+    """Base plate 3 oz + HSA wrist 12.9 oz, nothing else counted twice or left out."""
+    assert [p.name for p in hsa_calib.PAYLOAD_PARTS] == ['base plate', 'HSA wrist']
+    assert hsa_calib.BASE_PLATE.mass == pytest.approx(0.08505, abs=1e-5)
+    assert hsa_calib.HSA_WRIST.mass == pytest.approx(0.36571, abs=1e-5)
+    assert hsa_calib.PAYLOAD_MASS == pytest.approx(15.9 * 0.028349523125)
+
+
+def test_combined_com_lies_between_the_parts():
+    """The mass-weighted CoM sits on the flange axis, between the plate's and the wrist's."""
+    x, y, z = hsa_calib.payload_com_flange()
+    assert (x, y) == (0.0, 0.0)
+    assert hsa_calib.BASE_PLATE.com_z < z < hsa_calib.HSA_WRIST.com_z
+
+
+def test_combined_inertia_exceeds_each_part_about_its_own_com():
+    """The parallel-axis shift only adds; the x and y moments must beat the wrist's own box."""
+    w, d, h = hsa_calib.HSA_WRIST.extents
+    own_ixx = hsa_calib.HSA_WRIST.mass / 12.0 * (d**2 + h**2)
+    ixx, iyy = hsa_calib.payload_inertia_flange()[0], hsa_calib.payload_inertia_flange()[4]
+    assert ixx > own_ixx and iyy > own_ixx

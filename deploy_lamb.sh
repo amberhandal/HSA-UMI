@@ -81,10 +81,10 @@ ssh "${HOST}" "
 # --packages-up-to, not --packages-select: polyumi_ros2 depends on franka_streaming_impedance_client
 # (symlinked into ros2_ws/src/ per CLAUDE.md's impedance-controller section), and --packages-select
 # builds ONLY the named package, silently leaving that dependency at whatever install/ already had.
-echo "==> Building polyumi_ros2 on ${HOST} ..."
+echo "==> Building polyumi_ros2 + hsa_ros2 on ${HOST} ..."
 ssh -o ConnectTimeout=10 "${HOST}" \
     "unset VIRTUAL_ENV; cd ${REPO}/ros2_ws && source /opt/ros/kilted/setup.bash \
-     && colcon build --packages-up-to polyumi_ros2"
+     && colcon build --packages-up-to polyumi_ros2 hsa_ros2"
 
 # policy_client_node imports polyumi_inference directly (CLAUDE.md, "The Inference Protocol Lives
 # in One Library"). --no-deps so numpy/requests keep coming from apt via rosdep rather than pip

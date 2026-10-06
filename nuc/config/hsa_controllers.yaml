@@ -1,5 +1,5 @@
 # HSA-UMI's ros2_control controllers, declared for the station's controller_manager and loaded by the
-# spawner in fer_inference.launch.py.
+# spawner in inference.launch.py.
 #
 # The instance is named polyumi_cartesian_impedance_controller and listens on /polyumi/target_poses_traj
 # because every producer (policy_client_node, the teleop, the probes) and every doc names those: wiring,
@@ -21,7 +21,7 @@ polyumi_cartesian_impedance_controller:
     arm_id: fer
     base_frame: fer_link0
     # The policy's body frame: the wrist plate at the neutral servo setpoint, a static child of fer_link8
-    # published by fer_bringup.launch.py from nuc/hsa_calib.py (the one definition of the geometry). The
+    # published by bringup.launch.py from nuc/hsa_calib.py (the one definition of the geometry). The
     # controller moves the measured pose and the Jacobian onto it with one TF lookup at activation.
     tcp_frame: hsa_tcp
     # Absolute, not the controller's node-relative default: polyumi_ros2.target_chunk publishes

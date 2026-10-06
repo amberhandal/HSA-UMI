@@ -1,4 +1,4 @@
-# policy_client_node config for the FER + HSA wrist: cadence, frames, camera and latencies.
+# policy_client_node config for HSA-UMI: cadence, frames, camera and latencies.
 # Loaded by launch/inference.launch.xml. Only the keys set here are listed; every key is
 # documented in polyumi_ros2/config/inference.yaml.
 
@@ -6,8 +6,7 @@
   ros__parameters:
     # --- Where the observation comes from ---
     image_topic: /camera/color/image_raw       # camera.launch.xml; the recorder reads the same topic
-    base_frame: fer_link0
-    eef_frame: hsa_tcp                         # the wrist plate, published by fer_bringup.launch.py
+    # base_frame / eef_frame: config/robots/<robot>.yaml, loaded after this file by inference.launch.xml
     control_hz: 10.0
     n_obs_steps: 2
     image_width: 224                           # the shared pixel contract: crop to 4:3 (a no-op at
@@ -32,7 +31,7 @@
       # How far the arm trails the impedance controller's equilibrium point. Inherited from an FR3
       # deployment with the same controller and gains, not yet measured on the FER; re-measure once
       # the wrist is mounted (its compliance adds to it) with
-      #     ros2 run polyumi_ros2 latency_probe --ros-args -p mode:=arm -p base_frame:=fer_link0 -p eef_frame:=hsa_tcp
+      #     ros2 run polyumi_ros2 latency_probe --ros-args -p mode:=arm --params-file config/robots/fer.yaml
       arm_exec: 0.04
       finger_cam: 0.0
       piezo_mic: 0.0

@@ -2,23 +2,25 @@
 <!--
   Laptop-side inference: the wrist camera + policy_client_node (+ Foxglove).
 
-  The arm's TF (fer_link0 -> ... -> hsa_tcp) arrives over DDS from the station; source
+  The arm's TF (<arm>_link0 -> ... -> TCP) arrives over DDS from the arm box; source
   setup_franka_env.sh first. The policy server is wherever inference_server_url points: this
   laptop's container by default (Option 2), or lamb (Option 1). See docs/hsa-arm-inference.md.
 
     ros2 launch hsa_ros2 inference.launch.xml                          # log + preview only
+    ros2 launch hsa_ros2 inference.launch.xml robot:=fr3               # the CRB FR3 (default: $HSA_ROBOT, else fer)
     ros2 launch hsa_ros2 inference.launch.xml execute_motion:=true     # publishes chunks to the arm
     ros2 launch hsa_ros2 inference.launch.xml \
         inference_server_url:=http://lamb.mech.northwestern.edu:8002/predict_cartesian/
 
   Dry run on the arm: real server, execute_motion false, watch /polyumi/target_poses_preview in
-  Foxglove. Sane output sits near the current hsa_tcp with small step-to-step deltas.
+  Foxglove. Sane output sits near the current TCP with small step-to-step deltas.
 -->
 <launch>
+  <arg name="robot" default="$(env HSA_ROBOT fer)" description="fer | fr3: picks config/robots/ROBOT.yaml (frames)"/>
   <arg name="inference_server_url" default="http://localhost:8002/predict_cartesian/"/>
   <!-- Off by default: the arm does NOT move until this is true. When true, each action chunk goes
        out as a MultiDOFJointTrajectory on /polyumi/target_poses_traj for the station's streaming
-       controller, which must be ACTIVE there (fer_inference.launch.py execute_arm:=true). -->
+       controller, which must be ACTIVE there (nuc/launch/inference.launch.py execute_arm:=true). -->
   <arg name="execute_motion" default="false"/>
   <arg name="publish_preview" default="true"/>
   <!-- Newest camera frame older than this drops the tick. 0 = auto (~50 ms, assumes a 60 Hz camera);
@@ -44,6 +46,7 @@
 
   <node pkg="polyumi_ros2" exec="policy_client_node" name="policy_client_node" output="screen">
     <param from="$(var inference_config)"/>
+    <param from="$(find-pkg-share hsa_ros2)/config/robots/$(var robot).yaml"/>
     <param name="inference_server_url" value="$(var inference_server_url)"/>
     <param name="execute_motion" value="$(var execute_motion)"/>
     <param name="publish_preview" value="$(var publish_preview)"/>

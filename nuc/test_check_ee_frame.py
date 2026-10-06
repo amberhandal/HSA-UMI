@@ -2,7 +2,7 @@ r"""
 Tests for the bringup-time end-effector frame check.
 
 The two candidate frames differ by 10 cm and 45 deg, so the comparison is undemanding; what matters is
-that each outcome maps to the right exit code, because fer_bringup.launch.py aborts on 1 and continues on
+that each outcome maps to the right exit code, because bringup.launch.py aborts on 1 and continues on
 0. Runs on the laptop: only franka_msgs' message definitions are needed, and the one test that spins a
 node does so against an empty graph.
 

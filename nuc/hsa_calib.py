@@ -2,7 +2,7 @@
 The measured constants of what HSA-UMI bolts to the FER's flange: the TCP frame, and the payload.
 
 ``hsa_tcp`` is the wrist's moving plate at its neutral servo setpoint, a fixed child of ``fer_link8``. Its
-consumers -- TF (fer_bringup.launch.py) and the streaming controller (``tcp_frame`` in
+consumers -- TF (bringup.launch.py) and the streaming controller (``tcp_frame`` in
 nuc/config/hsa_controllers.yaml) -- must agree, so the numbers live here and nowhere else. Values marked
 ESTIMATE are placeholders: measure them, set ``CALIBRATION_STATUS`` to the date, then verify the TCP with
 ``ros2 run polyumi_ros2 tcp_pivot_test --ros-args -p eef_frame:=hsa_tcp`` and the payload by watching for
@@ -11,6 +11,7 @@ droop when the impedance controller activates (docs/calibration-instructions.md,
 
 import math
 import os
+from typing import NamedTuple
 
 ARM_ID = 'fer'
 
@@ -44,7 +45,7 @@ TCP_RPY = (0.0, 0.0, -math.pi / 4)
 
 # --------------------------------------------------------------------------------------------
 # Where fer_hand_tcp comes from: the controller takes franka's O_T_EE as the pose of <arm_id>_hand_tcp
-# and converts it onto tcp_frame through TF. With no hand in the URDF, fer_bringup.launch.py publishes
+# and converts it onto tcp_frame through TF. With no hand in the URDF, bringup.launch.py publishes
 # fer_link8 -> fer_hand_tcp statically, and it MUST equal the F_T_EE of the end effector configured in
 # Desk: a wrong value fails nowhere, the spring is simply anchored 10 cm from where the policy thinks
 # the plate is. check_ee_frame.py verifies it at bringup; the desk_end_effector launch argument
@@ -62,26 +63,47 @@ DESK_EE_TRANSFORMS = {
 # --------------------------------------------------------------------------------------------
 # The payload -- everything past the flange, for libfranka's gravity compensation. Unmodelled mass is
 # a constant force the impedance spring fights (dz = m * g / K_trans the moment the controller
-# activates). Pushed once at bringup via franka_msgs/srv/SetLoad (fer_bringup.launch.py).
+# activates). Pushed once at bringup via franka_msgs/srv/SetLoad (bringup.launch.py).
 #
 # The whole assembly, not a residual: with Desk's end effector at "None" the robot carries no m_ee
 # of its own. With "Franka Hand" the FCI already assumes 0.73 kg at the hand's CoM and this must
 # become the DIFFERENCE -- check with
 #     ros2 topic echo /franka_robot_state_broadcaster/robot_state --field inertia_ee --once
 #
-# ESTIMATE: six Dynamixel XM430-W350 at 82 g (0.49 kg) plus two plates, six HSAs, the U2D2 and
-# the cabling the arm carries. Replace with a scale reading of everything past the flange.
-PAYLOAD_MASS = 0.0 if TOOL == 'bare' else 0.9  # kg
+# Two parts, each a uniform solid box on the flange axis, combined below into the one load SetLoad takes.
+# Masses weighed 2026-10-05 (oz -> kg). Positions and sizes are ESTIMATES until measured.
+OZ = 0.028349523125  # kg
 
-# In fer_link8 directly (there is no hand frame to convert from): the servos sit on the base
-# plate, so the CoM is below mid-height. ESTIMATE.
-PAYLOAD_COM_FLANGE = (0.0, 0.0, 0.0) if TOOL == 'bare' else (0.0, 0.0, 0.06)  # m
 
-# The FER firmware rejects a nonzero mass carrying a zero inertia ("invalid argument"), so this cannot
-# be left at zero. A uniform solid box centred on the CoM, in fer_link8 axes, ordered (x, y, z): a real
-# box's principal moments always satisfy the triangle inequality the firmware checks. ESTIMATE; inertia
-# only enters the acceleration terms and the arm moves slowly, so the order of magnitude is what matters.
-PAYLOAD_EXTENTS = (0.12, 0.12, 0.15)
+class PayloadPart(NamedTuple):
+    """One rigid piece past the flange: mass, CoM height above the flange face, box size (x, y, z)."""
+
+    name: str
+    mass: float  # kg
+    com_z: float  # m, in fer_link8
+    extents: tuple[float, float, float]  # m
+
+
+#: Base plate, bolted to the flange. ESTIMATE thickness and footprint.
+BASE_PLATE_THICKNESS = 0.008  # m
+BASE_PLATE = PayloadPart('base plate', 3.0 * OZ, BASE_PLATE_THICKNESS / 2, (0.12, 0.12, BASE_PLATE_THICKNESS))
+
+#: The HSA wrist on top of the base plate, up to the moving plate. Its CoM is taken at mid-height. ESTIMATE.
+_WRIST_HEIGHT = PLATE_HEIGHT_Z - BASE_PLATE_THICKNESS
+HSA_WRIST = PayloadPart(
+    'HSA wrist', 12.9 * OZ, BASE_PLATE_THICKNESS + _WRIST_HEIGHT / 2, (0.12, 0.12, max(_WRIST_HEIGHT, 0.01))
+)
+
+PAYLOAD_PARTS: tuple[PayloadPart, ...] = () if TOOL == 'bare' else (BASE_PLATE, HSA_WRIST)
+
+PAYLOAD_MASS = sum(part.mass for part in PAYLOAD_PARTS)  # kg
+
+# In fer_link8 directly (there is no hand frame to convert from); every part is centred on the flange axis.
+PAYLOAD_COM_FLANGE = (
+    0.0,
+    0.0,
+    sum(part.mass * part.com_z for part in PAYLOAD_PARTS) / PAYLOAD_MASS if PAYLOAD_MASS else 0.0,
+)
 
 
 def _stp_args(xyz, rpy, parent, child) -> list[str]:
@@ -134,15 +156,22 @@ def payload_com_flange() -> tuple[float, float, float]:
 
 def payload_inertia_flange() -> tuple[float, ...]:
     """
-    Build the payload's inertia tensor about its CoM, in ``fer_link8``, column-major.
+    Build the payload's inertia tensor about its combined CoM, in ``fer_link8``, column-major.
 
-    A uniform solid box from :data:`PAYLOAD_EXTENTS`, whose axes are already the flange's, so the
-    tensor is diagonal. Computed rather than written down so it cannot go stale against
-    :data:`PAYLOAD_MASS`; the FER rejects a nonzero mass carrying a zero tensor.
+    Each part is a uniform solid box in the flange's axes, moved to the combined CoM with the parallel-axis
+    theorem; all CoMs lie on the z axis, so the tensor stays diagonal. Computed rather than written down so it
+    cannot go stale against the masses. The FER rejects a nonzero mass carrying a zero tensor, and a sum of
+    real boxes always satisfies the triangle inequality the firmware checks.
     """
-    w, d, h = PAYLOAD_EXTENTS
-    k = PAYLOAD_MASS / 12.0
-    ixx, iyy, izz = k * (d**2 + h**2), k * (w**2 + h**2), k * (w**2 + d**2)
+    zc = PAYLOAD_COM_FLANGE[2]
+    ixx = iyy = izz = 0.0
+    for part in PAYLOAD_PARTS:
+        w, d, h = part.extents
+        k = part.mass / 12.0
+        shift = part.mass * (part.com_z - zc) ** 2
+        ixx += k * (d**2 + h**2) + shift
+        iyy += k * (w**2 + h**2) + shift
+        izz += k * (w**2 + d**2)
     return (ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz)
 
 
@@ -163,7 +192,8 @@ def describe() -> str:
 
 def describe_payload() -> str:
     """One-line summary of the payload pushed to the FCI, for the same reason as :func:`describe`."""
+    parts = ', '.join(f'{part.name} {part.mass:.3f} kg' for part in PAYLOAD_PARTS) or 'nothing'
     return (
-        f'payload: {PAYLOAD_MASS} kg, CoM {payload_com_flange()} in {TCP_PARENT}; '
+        f'payload: {PAYLOAD_MASS:.3f} kg ({parts}), CoM {payload_com_flange()} in {TCP_PARENT}; '
         f'calibration: {CALIBRATION_STATUS} (nuc/hsa_calib.py)'
     )
