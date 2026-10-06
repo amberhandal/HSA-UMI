@@ -7,11 +7,13 @@
 
       source setup_franka_env.sh          # DDS + franka_description for the meshes
       ros2 launch hsa_ros2 rviz.launch.xml
+      ros2 launch hsa_ros2 rviz.launch.xml robot:=fr3     # fixed frame fr3_link0 (default: $HSA_ROBOT, else fer)
 
   The meshes resolve through package://franka_description, which setup_franka_env.sh puts on the
   path from ~/ws/franka; without it the arm shows as frames only.
 -->
 <launch>
+  <arg name="robot" default="$(env HSA_ROBOT fer)" description="fer | fr3: sets the fixed frame to ROBOT_link0"/>
   <arg name="config" default="$(find-pkg-share hsa_ros2)/rviz/hsa.rviz"/>
-  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen" args="-d $(var config)"/>
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen" args="-d $(var config) -f $(var robot)_link0"/>
 </launch>

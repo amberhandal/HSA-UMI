@@ -6,8 +6,7 @@
   ros__parameters:
     control_hz: 50.0               # ticks per second. After a release the target still moves for one to two ticks
                                    # (20-40 ms at 50 Hz, 100-200 ms at 10 Hz). Does not set the recorder's data rate.
-    base_frame: fer_link0          # the FER's base link (fr3_link0 on an FR3)
-    tcp_frame: hsa_tcp             # the HSA wrist plate (neutral servo pose), published by the arm bringup
+                                   # base_frame / tcp_frame: config/robots/<robot>.yaml (add it with --params-file)
     execute: false                 # false = preview only.  Set true ONLY when the controller is active.
     chunk_len: 6                   # waypoints per chunk: the target, then 5 more along the puck's velocity (120 ms of
                                    # cover at 50 Hz if a chunk is late; a hold would stop the reference every tick)

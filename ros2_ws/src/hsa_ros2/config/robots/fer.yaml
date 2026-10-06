@@ -1,0 +1,8 @@
+# Frames for robot:=fer (the station's FER, HSA wrist plate as TCP). Loaded after each node's own config by
+# the hsa_ros2 launch files; for `ros2 run`, add `--params-file <this file>`. Must match nuc/robots.py.
+# Both TCP keys: hsa_ros2 nodes read tcp_frame, policy_client_node reads eef_frame.
+/**:
+  ros__parameters:
+    base_frame: fer_link0
+    tcp_frame: hsa_tcp
+    eef_frame: hsa_tcp
