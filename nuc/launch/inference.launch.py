@@ -15,6 +15,7 @@ arm controller must already exist or /polyumi/home has nothing to drive. See doc
 """
 
 from pathlib import Path
+import re
 import sys
 
 from launch import LaunchDescription
@@ -100,11 +101,31 @@ def gripper_drivers(robot_ip: str, gripper: str) -> list:
     return []
 
 
+def home_pose_path(robot: robots.Robot, name: str, path: str) -> str:
+    """
+    Pick the file /polyumi/set_home writes and /polyumi/home reads.
+
+    An explicit path wins; a name (home_pose:=key_in_hole) maps to ~/.ros/hsa_home_<name>.yaml, so each task
+    keeps its own start pose; neither = the robot's default.
+    """
+    if path:
+        return path
+    if name:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', name):
+            raise ValueError(f'home_pose must be letters, digits, _ or -, not {name!r}')
+        return f'~/.ros/hsa_home_{name}.yaml'
+    return robot.home_pose_file
+
+
 def launch_setup(context):
     """Build the stack for the robot named by the `robot` argument."""
     robot = robots.get(LaunchConfiguration('robot').perform(context))
     robot_ip = LaunchConfiguration('robot_ip').perform(context) or robot.robot_ip
-    home_pose_file = LaunchConfiguration('home_pose_file').perform(context) or robot.home_pose_file
+    home_pose_file = home_pose_path(
+        robot,
+        LaunchConfiguration('home_pose').perform(context),
+        LaunchConfiguration('home_pose_file').perform(context),
+    )
     execute_arm = LaunchConfiguration('execute_arm').perform(context) == 'true'
     execute_gripper = LaunchConfiguration('execute_gripper').perform(context) == 'true'
     gripper = LaunchConfiguration('gripper').perform(context)
@@ -175,6 +196,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 'robot_ip', default_value='', description="The arm's hostname or IP; empty = the robot's default."
+            ),
+            DeclareLaunchArgument(
+                'home_pose',
+                default_value='',
+                description='Named start pose, e.g. key_in_hole: set_home and home use ~/.ros/hsa_home_<name>.yaml. '
+                "Empty = the robot's default file.",
             ),
             DeclareLaunchArgument(
                 'home_pose_file',

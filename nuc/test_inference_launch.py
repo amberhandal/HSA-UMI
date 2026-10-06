@@ -44,7 +44,7 @@ def _argv_text(entity) -> str:
 def actions(monkeypatch):
     """Return a function building launch_setup's actions for the given arguments and ROS distro."""
 
-    def build(robot='fer', execute_arm='false', execute_gripper='false', gripper='faulhaber', home_pose_file='',
+    def build(robot='fer', execute_arm='false', execute_gripper='false', gripper='faulhaber', home_pose_file='', home_pose='',
               distro='kilted'):  # fmt: skip
         monkeypatch.setenv('ROS_DISTRO', distro)
         context = LaunchContext()
@@ -52,6 +52,7 @@ def actions(monkeypatch):
             robot=robot,
             robot_ip='',
             home_pose_file=home_pose_file,
+            home_pose=home_pose,
             execute_arm=execute_arm,
             execute_gripper=execute_gripper,
             gripper=gripper,
@@ -166,3 +167,22 @@ def test_fer_never_starts_a_gripper_driver(actions):
     """The FER has no gripper; a stray flag must not start a driver that grabs nothing."""
     assert _drivers(actions('fer', gripper='hand', execute_gripper='true')) == set()
 
+
+def test_named_home_pose_gets_its_own_file(actions):
+    """home_pose:=key_in_hole keeps that task's start pose apart from every other task's."""
+    cmds = [_argv_text(a) for a in actions('fer', home_pose='key_in_hole') if isinstance(a, ExecuteProcess)]
+    assert any('home_pose_file:=~/.ros/hsa_home_key_in_hole.yaml' in c for c in cmds)
+
+
+def test_home_pose_file_beats_a_name(actions):
+    """An explicit path is the more specific statement (mock runs rely on it)."""
+    cmds = [_argv_text(a) for a in actions('fer', home_pose='key_in_hole', home_pose_file='/tmp/x.yaml')
+            if isinstance(a, ExecuteProcess)]  # fmt: skip
+    assert any('home_pose_file:=/tmp/x.yaml' in c for c in cmds)
+
+
+@pytest.mark.parametrize('name', ['../etc', 'a b', 'x/y'])
+def test_home_pose_name_cannot_escape_the_directory(actions, name):
+    """The name becomes part of a path; anything but a plain word is refused."""
+    with pytest.raises(ValueError):
+        actions('fer', home_pose=name)
