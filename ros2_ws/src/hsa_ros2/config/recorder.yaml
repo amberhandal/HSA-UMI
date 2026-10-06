@@ -1,10 +1,10 @@
-# Parameters for demo_recorder. Load with --params-file (launch/desk_test.launch.xml does).
+# Parameters for demo_recorder. Load with --params-file (launch/desk_test.launch.xml does), then the robot's
+# frames:  ros2 run hsa_ros2 demo_recorder --ros-args --params-file recorder.yaml --params-file robots/fr3.yaml
 /**:
   ros__parameters:
     output_dir: ~/hsa_data/session      # one directory per dataset; the recorder appends across restarts
     image_topic: /camera/color/image_raw
-    base_frame: fer_link0
-    tcp_frame: hsa_tcp
+    # base_frame / tcp_frame: config/robots/<robot>.yaml (add it with --params-file after this file)
     latency:
       camera: 0.030                     # photon -> header.stamp. ESTIMATE (half the 33 ms exposure); measure with latency_probe mode:=camera and keep equal to inference.yaml latency.gopro
       proprio: 0.001                    # libfranka stamps at read (UMI's value, not re-measured)

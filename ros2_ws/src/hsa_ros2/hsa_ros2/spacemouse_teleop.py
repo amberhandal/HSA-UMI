@@ -351,9 +351,14 @@ class SpacemouseTeleop(Node):
         def done(fut):
             try:
                 resp = fut.result()
-                (self.get_logger().info if resp.success else self.get_logger().error)(f'{name}: {resp.message}')
             except Exception as e:  # noqa: BLE001
                 self.get_logger().error(f'{name} failed: {e!r}')
+                return
+            # Two separate call sites: rclpy refuses to log from one line at a changing severity.
+            if resp.success:
+                self.get_logger().info(f'{name}: {resp.message}')
+            else:
+                self.get_logger().error(f'{name}: {resp.message}')
 
         future.add_done_callback(done)
 
@@ -477,9 +482,12 @@ class SpacemouseTeleop(Node):
 
         self._tick_count += 1
         if self._tick_count % int(self._hz * 5) == 0:
+            # From the published pose, not self._target: that is None while holding (e.g. during a home).
+            xyz = [round(pose.position.x, 3), round(pose.position.y, 3), round(pose.position.z, 3)]
             self.get_logger().info(
-                f'target xyz={np.round(self._target[:3], 3).tolist()} stage={self._stage} '
+                f'target xyz={xyz} stage={self._stage} '
                 f'{"rot" if rotation_mode else "trans"}{"+z" if z_enabled else ""}'
+                f'{" (holding: no controller)" if self._holding else ""}'
             )
 
     def destroy_node(self):

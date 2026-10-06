@@ -6,8 +6,7 @@
   ros__parameters:
     control_hz: 50.0               # ticks per second. After a release the target still moves for one to two ticks
                                    # (20-40 ms at 50 Hz, 100-200 ms at 10 Hz). Does not set the recorder's data rate.
-    base_frame: fer_link0          # the FER's base link (fr3_link0 on an FR3)
-    tcp_frame: hsa_tcp             # the HSA wrist plate (neutral servo pose), published by the arm bringup
+                                   # base_frame / tcp_frame: config/robots/<robot>.yaml (add it with --params-file)
     execute: false                 # false = preview only.  Set true ONLY when the controller is active.
     chunk_len: 6                   # waypoints per chunk: the target, then 5 more along the puck's velocity (120 ms of
                                    # cover at 50 Hz if a chunk is late; a hold would stop the reference every tick)
@@ -18,15 +17,16 @@
     max_rot_speed: 0.15            # rad/s at full puck deflection
 
     workspace:                     # base-frame box the TCP target is clipped to
-      # Sized for the bare flange and well inside the FER's 0.855 m reach: a target the arm cannot reach
-      # has the controller pushing at full clip force. Re-derive when the wrist goes on: its plate sits
-      # PLATE_HEIGHT_Z (0.15 m) beyond the flange, so x_max can grow by about that much.
-      x_min: 0.25
-      x_max: 0.72
-      y_min: -0.35
-      y_max: 0.35
-      z_min: 0.05
-      z_max: 0.5
+      # The bare-flange box grown 0.15 m on every side for the wrist (its plate sits PLATE_HEIGHT_Z, 0.15 m,
+      # beyond the flange) and the key-in-hole lock. Only a clip on the target, not a collision check: a
+      # target the arm cannot reach, or one inside the table, has the controller pushing at full clip force.
+      # z_min is below the base's mounting plane, so watch the table when going low.
+      x_min: 0.10
+      x_max: 0.87
+      y_min: -0.50
+      y_max: 0.50
+      z_min: -0.10
+      z_max: 0.65
 
     input_source: spacemouse       # spacemouse | fake_sine | none
     spacemouse:

@@ -49,9 +49,9 @@ echo; echo "### 1. policy server on this laptop (loads in the background)"
 SERVER_PID=$!
 
 echo "### 2. station: mock bringup, then the inference launch"
-remote_bg hsa-mock-bringup "$STATION_ENV && cd ~/HSA-UMI && ros2 launch nuc/launch/fer_bringup.launch.py use_fake_hardware:=true robot_ip:=127.0.0.1"
+remote_bg hsa-mock-bringup "$STATION_ENV && cd ~/HSA-UMI && ros2 launch nuc/launch/bringup.launch.py robot:=fer use_fake_hardware:=true robot_ip:=127.0.0.1"
 sleep 16
-remote_bg hsa-mock-inference "$STATION_ENV && cd ~/HSA-UMI && ros2 launch nuc/launch/fer_inference.launch.py home_pose_file:=/tmp/hsa_mock_home_pose.yaml"
+remote_bg hsa-mock-inference "$STATION_ENV && cd ~/HSA-UMI && ros2 launch nuc/launch/inference.launch.py robot:=fer home_pose_file:=/tmp/hsa_mock_home_pose.yaml"
 sleep 12
 echo "--- station: controllers + key log lines"
 ssh -o ConnectTimeout=5 "$STATION" "bash -lc '$STATION_ENV >/dev/null 2>&1; ros2 control list_controllers 2>&1 | head -5; grep -E \"Loaded hardware|TCP |ERROR|rror:\" ~/hsa-mock-bringup.log | cut -c1-160 | head -6; grep -E \"fer_home_service|ERROR\" ~/hsa-mock-inference.log | cut -c1-160 | head -4'" 2>&1

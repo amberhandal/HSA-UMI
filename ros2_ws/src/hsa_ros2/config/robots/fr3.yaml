@@ -1,0 +1,8 @@
+# Frames for robot:=fr3 (the CRB NUC's FR3, its gripper's fingertip frame as TCP, nuc/tcp_calib.py). Loaded
+# after each node's own config by the hsa_ros2 launch files; for `ros2 run`, add `--params-file <this file>`.
+# Must match nuc/robots.py. Both TCP keys: hsa_ros2 nodes read tcp_frame, policy_client_node reads eef_frame.
+/**:
+  ros__parameters:
+    base_frame: fr3_link0
+    tcp_frame: polyumi_tcp
+    eef_frame: polyumi_tcp

@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Bring up the whole HSA inference stack -- station, policy server, ROS client -- as one tmux session.
+# Bring up the whole HSA inference stack -- arm box, policy server, ROS client -- as one tmux session.
 #
-#     ./hsa_session.sh                 # create (or re-attach to) the session
-#     SKIP_DEPLOY=1 ./hsa_session.sh   # ...without re-syncing and rebuilding on the station first
-#     ./hsa_session.sh --kill-local    # tear down the LOCAL session only (the station's survive)
-#     ./hsa_session.sh --kill          # ...and stop the station's sessions too
+#     ./hsa_session.sh                 # create (or re-attach to) the session, robot:=fer
+#     ./hsa_session.sh robot:=fr3      # the CRB FR3 instead (also --robot fr3, or HSA_ROBOT=fr3)
+#     SKIP_DEPLOY=1 ./hsa_session.sh   # ...without re-syncing and rebuilding on the arm box first
+#     ./hsa_session.sh --kill-local    # tear down the LOCAL session only (the remote ones survive)
+#     ./hsa_session.sh --kill          # ...and stop the remote sessions too (pass the same robot:=)
 #
-# The station runs the arm only; this laptop runs the RealSense, policy_client_node, Foxglove and,
-# unless POLICY_HOST names a GPU box, the policy server, so inference stays on loopback
-# (docs/hsa-architecture-options.md). Safe commands are RUN; anything needing a decision (which
+# robot:=fer  the station runs the arm only; this laptop runs the RealSense, policy_client_node,
+#             Foxglove and, unless POLICY_HOST names a GPU box, the policy server, so inference stays
+#             on loopback (docs/hsa-architecture-options.md).
+# robot:=fr3  the CRB NUC (ssh jailfranka) runs the arm; lamb, cabled to it, runs the client and the
+#             policy server, and this machine is only a terminal (CLIENT_HOST= runs the client here).
+#
+# Safe commands are RUN; anything needing a decision (which
 # checkpoint, whether the arm may move) is only PRE-TYPED: edit the line, press Enter. Station
 # panes run tmux ON the station (survives a laptop sleep; re-running re-attaches), so `ssh-copy-id
 # station` first or every pane asks for a password. Launch output is tee'd to
@@ -16,26 +21,55 @@
 
 set -euo pipefail
 
-ACTION="${1:-}"
-SESSION="${SESSION:-hsa}"
+ACTION=""
+ROBOT="${HSA_ROBOT:-fer}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    robot:=*) ROBOT="${1#robot:=}" ;;
+    --robot=*) ROBOT="${1#--robot=}" ;;
+    --robot) ROBOT="${2:?--robot needs fer or fr3}"; shift ;;
+    --kill|--kill-local) ACTION="$1" ;;
+    *) echo "usage: $0 [robot:=fer|fr3] [--kill|--kill-local]" >&2; exit 2 ;;
+  esac
+  shift
+done
+
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHELL_SETTLE_S="${SHELL_SETTLE_S:-5}"
 
-# The station and the repo path on it travel as a pair. Paths stay unexpanded so the REMOTE
-# shell resolves the tilde against its own $HOME.
-STATION_SSH_HOST="${STATION_SSH_HOST:-station}"
+# Per-robot defaults; every one can still be overridden from the environment. Paths stay
+# unexpanded so the REMOTE shell resolves the tilde against its own $HOME.
+#   STATION_*  the box that drives the arm (nuc/ + the controller run there)
+#   CLIENT_*   where the camera and policy_client_node run ("" = this machine)
+#   POLICY_*   where the policy server runs ("" = this machine)
+case "$ROBOT" in
+  fer)
+    : "${SESSION:=hsa}"
+    : "${STATION_SSH_HOST:=station}"
+    : "${CLIENT_HOST=}"
+    : "${POLICY_HOST=}"
+    ;;
+  fr3)
+    : "${SESSION:=hsa-fr3}"
+    : "${STATION_SSH_HOST:=${NUC_SSH_HOST:-jailfranka}}"
+    : "${CLIENT_HOST=${ROS_SSH_HOST:-lamb}}"
+    : "${POLICY_HOST=$CLIENT_HOST}"
+    ;;
+  *) echo "error: robot must be fer or fr3, not '$ROBOT'" >&2; exit 2 ;;
+esac
 STATION_REPO="${STATION_REPO:-~/HSA-UMI}"
-
-# Empty = serve on this laptop (rootful Docker here, hence USER_FLAG). A host name = serve there
-# over ssh (rootless Docker on lamb: serve_policy.sh's defaults), and the client is pointed at it.
-POLICY_HOST="${POLICY_HOST:-}"
+CLIENT_REPO="${CLIENT_REPO:-~/repos/HSA-UMI}"
 POLICY_REPO="${POLICY_REPO:-~/repos/HSA-UMI}"
 POLICY_PORT="${POLICY_PORT:-8002}"
-if [ -n "$POLICY_HOST" ]; then
-  INFERENCE_URL="${INFERENCE_URL:-http://${POLICY_HOST}:${POLICY_PORT}/predict_cartesian/}"
-else
+# Same box as the client (or both here): loopback. Otherwise over the network.
+if [ -z "$POLICY_HOST" ] || [ "$POLICY_HOST" = "$CLIENT_HOST" ]; then
   INFERENCE_URL="${INFERENCE_URL:-http://localhost:${POLICY_PORT}/predict_cartesian/}"
+else
+  INFERENCE_URL="${INFERENCE_URL:-http://${POLICY_HOST}:${POLICY_PORT}/predict_cartesian/}"
 fi
+# FR3 only: the gripper driver the arm box starts (faulhaber | hand). Empty = none: the HSA policy's
+# gripper output is a placeholder, and the fingers should not follow it.
+GRIPPER="${GRIPPER:-}"
 # Defaults true because the line is only PRE-TYPED, never run, and the station has its own
 # execute_arm flag (default false) in front of the arm.
 EXECUTE_MOTION="${EXECUTE_MOTION:-true}"
@@ -44,6 +78,7 @@ MAX_IMAGE_AGE_S="${MAX_IMAGE_AGE_S:-0.1}"
 
 REMOTE_SESSIONS=("$STATION_SSH_HOST hsa-bringup" "$STATION_SSH_HOST hsa-inference")
 [ -n "$POLICY_HOST" ] && REMOTE_SESSIONS+=("$POLICY_HOST hsa-policy")
+[ -n "$CLIENT_HOST" ] && REMOTE_SESSIONS+=("$CLIENT_HOST hsa-client")
 
 # ---------------------------------------------------------------------------
 # Teardown
@@ -73,7 +108,7 @@ if [ "$ACTION" = "--kill-local" ] || [ "$ACTION" = "--kill" ]; then
   fi
   tmux kill-session -t "$SESSION" 2>/dev/null && echo "Killed local session '$SESSION'." || true
   if [ "$ACTION" = "--kill-local" ]; then
-    echo "NOTE: the station's tmux sessions are still running by design. ./hsa_session.sh --kill stops them."
+    echo "NOTE: the remote tmux sessions are still running by design. ./hsa_session.sh robot:=$ROBOT --kill stops them."
     exit 0
   fi
   for hs in "${REMOTE_SESSIONS[@]}"; do
@@ -93,22 +128,33 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exec tmux attach -t "$SESSION"
 fi
 
+# Only one process may hold the FCI. On the shared NUC that may be the CRB team's own bringup.
+if ssh -o ConnectTimeout=5 -o BatchMode=yes "$STATION_SSH_HOST" 'tmux has-session -t fr3-bringup' 2>/dev/null; then
+  echo "WARNING: $STATION_SSH_HOST has a live 'fr3-bringup' tmux session (fr3_session.sh). Stop it before" >&2
+  echo "         running HSA bringup there: two bringups cannot both hold the FCI." >&2
+fi
+
 # ---------------------------------------------------------------------------
-# Deploy: the station runs THIS working copy, not whatever it last had.
+# Deploy: every box runs THIS working copy, not whatever it last had.
 # ---------------------------------------------------------------------------
 if [ "${SKIP_DEPLOY:-0}" = 1 ]; then
-  echo "SKIP_DEPLOY=1 -- leaving the station's tree as it is."
+  echo "SKIP_DEPLOY=1 -- leaving the remote trees as they are."
 else
-  echo "==> Deploying to $STATION_SSH_HOST via ./deploy_station.sh ..."
-  if ! (cd "$REPO_DIR" && ./deploy_station.sh "$STATION_SSH_HOST" "$STATION_REPO"); then
-    echo "WARNING: deploy_station.sh failed -- the station may run stale nuc/ code or a stale controller." >&2
+  echo "==> Deploying to $STATION_SSH_HOST via ./deploy_station.sh (robot $ROBOT) ..."
+  if ! (cd "$REPO_DIR" && HSA_ROBOT="$ROBOT" ./deploy_station.sh "$STATION_SSH_HOST" "$STATION_REPO"); then
+    echo "WARNING: deploy_station.sh failed -- $STATION_SSH_HOST may run stale nuc/ code or a stale controller." >&2
   fi
-  if [ -n "$POLICY_HOST" ]; then
-    echo "==> Deploying to $POLICY_HOST via ./deploy_lamb.sh ..."
-    if ! (cd "$REPO_DIR" && ./deploy_lamb.sh "$POLICY_HOST" "$POLICY_REPO"); then
-      echo "WARNING: deploy_lamb.sh failed -- $POLICY_HOST may serve stale code." >&2
+  # The client box and the policy box, once each (deploy_lamb.sh syncs the tree and builds the ROS side).
+  DEPLOYED=""
+  for hr in "$CLIENT_HOST $CLIENT_REPO" "$POLICY_HOST $POLICY_REPO"; do
+    read -r host repo <<<"$hr"
+    { [ -z "$host" ] || [ "$host" = "$DEPLOYED" ]; } && continue
+    echo "==> Deploying to $host via ./deploy_lamb.sh ..."
+    if ! (cd "$REPO_DIR" && ./deploy_lamb.sh "$host" "$repo"); then
+      echo "WARNING: deploy_lamb.sh failed -- $host may run stale code." >&2
     fi
-  fi
+    DEPLOYED="$host"
+  done
 fi
 
 # ---------------------------------------------------------------------------
@@ -130,15 +176,17 @@ add_pane() {
   P_NAME+=("$1"); P_HOST+=("$2"); P_SESS+=("$3"); P_LAYOUT+=("$4"); P_RUN+=("$5"); P_PRE+=("$6")
 }
 
-STATION_ENV="source $STATION_REPO/nuc/station_env.sh"
+STATION_ENV="export HSA_ROBOT=$ROBOT; source $STATION_REPO/nuc/station_env.sh"
+INFERENCE_ARGS="robot:=$ROBOT execute_arm:=true"
+[ -n "$GRIPPER" ] && INFERENCE_ARGS+=" gripper:=$GRIPPER execute_gripper:=true"
 
 # RUN: safe, moves nothing, everything else waits on it. Fails loudly if FCI is off in Desk.
 add_pane station "$STATION_SSH_HOST" hsa-bringup window \
-  "$STATION_ENV && cd $STATION_REPO && $(logged fer_bringup 'ros2 launch nuc/launch/fer_bringup.launch.py')" ""
+  "$STATION_ENV && cd $STATION_REPO && $(logged "${ROBOT}_bringup" "ros2 launch nuc/launch/bringup.launch.py robot:=$ROBOT")" ""
 
 # PRETYPE: carries execute_arm, so it is yours to press Enter on.
 add_pane station-inference "$STATION_SSH_HOST" hsa-inference split "" \
-  "$STATION_ENV && cd $STATION_REPO && $(logged fer_inference 'ros2 launch nuc/launch/fer_inference.launch.py execute_arm:=true')"
+  "$STATION_ENV && cd $STATION_REPO && $(logged "${ROBOT}_inference" "ros2 launch nuc/launch/inference.launch.py $INFERENCE_ARGS")"
 
 # PRETYPE: the checkpoint changes every training run. Local by default (rootful Docker: run the
 # container as this user), or on POLICY_HOST over ssh.
@@ -153,13 +201,20 @@ else
 fi
 
 # PRETYPE: depends on every pane above being live, so this is the one you press Enter on last.
-# setup_franka_env.sh is sourced on the line itself so the history entry carries its own DDS env.
-FOXGLOVE=false
-# Sourced with -u off: colcon's setup scripts read variables they never set.
-if ! command -v ros2 >/dev/null 2>&1; then set +u; source /opt/ros/kilted/setup.bash 2>/dev/null || true; set -u; fi
-ros2 pkg prefix foxglove_bridge >/dev/null 2>&1 && FOXGLOVE=true
-add_pane ros-client "" "" split "" \
-  "source setup_franka_env.sh && $(logged policy_client "ros2 launch hsa_ros2 inference.launch.xml inference_server_url:=$INFERENCE_URL execute_motion:=$EXECUTE_MOTION max_image_age_s:=$MAX_IMAGE_AGE_S foxglove:=$FOXGLOVE")"
+# setup_franka_env.sh is sourced on the line itself so the history entry carries its own DDS env;
+# HSA_ROBOT goes first because the host's link settings (config/env.<host>.sh) depend on it.
+if [ -z "$CLIENT_HOST" ]; then
+  FOXGLOVE="${FOXGLOVE:-false}"
+  # Sourced with -u off: colcon's setup scripts read variables they never set.
+  if ! command -v ros2 >/dev/null 2>&1; then set +u; source /opt/ros/kilted/setup.bash 2>/dev/null || true; set -u; fi
+  ros2 pkg prefix foxglove_bridge >/dev/null 2>&1 && FOXGLOVE=true
+  CLIENT_CD=""; CLIENT_SESS=""; CLIENT_LAYOUT=split
+else
+  FOXGLOVE="${FOXGLOVE:-false}"
+  CLIENT_CD="cd $CLIENT_REPO && "; CLIENT_SESS=hsa-client; CLIENT_LAYOUT=window
+fi
+add_pane ros-client "$CLIENT_HOST" "$CLIENT_SESS" "$CLIENT_LAYOUT" "" \
+  "${CLIENT_CD}export HSA_ROBOT=$ROBOT && source setup_franka_env.sh && $(logged policy_client "ros2 launch hsa_ros2 inference.launch.xml robot:=$ROBOT inference_server_url:=$INFERENCE_URL execute_motion:=$EXECUTE_MOTION max_image_age_s:=$MAX_IMAGE_AGE_S foxglove:=$FOXGLOVE")"
 
 # ---------------------------------------------------------------------------
 # Probe, open, type
@@ -214,12 +269,13 @@ done
 tmux select-window -t "$FIRST_WINDOW"
 cat <<EOF
 
-Session '$SESSION' is up. Policy server: ${POLICY_HOST:-this laptop} (client URL $INFERENCE_URL).
+Session '$SESSION' is up for robot:=$ROBOT. Arm box: $STATION_SSH_HOST. Client: ${CLIENT_HOST:-this machine}.
+Policy server: ${POLICY_HOST:-this machine} (client URL $INFERENCE_URL).
 Order to press Enter in:
-  1. station, left        already running bringup (enable FCI at https://station.robot first if it errors)
+  1. station, left        already running bringup (enable FCI in Desk first if it errors)
   2. station, right       the inference stack -- check execute_arm on the line before you run it
-  3. policy-server, left  the server -- edit CKPT to the checkpoint you want
-  4. ros-client, right    the client, last (execute_motion:=$EXECUTE_MOTION on the line)
+  3. policy-server        the server -- edit CKPT to the checkpoint you want
+  4. ros-client           the client, last (execute_motion:=$EXECUTE_MOTION on the line)
 
 Teach the start pose once (does NOT move), then home before every trial (MOVES THE ARM):
   ros2 service call /polyumi/set_home std_srvs/srv/Trigger "{}"
@@ -229,7 +285,7 @@ First time on the arm: keep execute_arm:=false and execute_motion:=false, watch
 /polyumi/target_poses_preview in Foxglove (ws://localhost:8765), then enable one at a time.
 
 tmux: C-b n/p next/prev window, C-b o next pane, C-b d detach, C-b C-b prefix for the INNER tmux.
-Re-attach any time with ./hsa_session.sh; the station panes pick up where they left off.
+Re-attach any time with ./hsa_session.sh robot:=$ROBOT; the remote panes pick up where they left off.
 
 EOF
 exec tmux attach -t "$SESSION"
