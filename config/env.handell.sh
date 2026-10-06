@@ -41,3 +41,9 @@ fi
 # one L2 subnet FastDDS needs no config file. nuc/station_env.sh reads the same variable.
 if [ "${HSA_ROBOT:-fer}" = fer ]; then : "${HSA_DDS:=fastdds}"; fi
 
+# foxglove_msgs (policy_client_node imports it) is built in an overlay here, not installed from apt.
+# Sourced before setup_franka_env.sh adds ROS and this repo's workspace, so it sits between the two.
+# Drop this once `sudo apt install ros-kilted-foxglove-msgs` is done.
+if [ -f "${HOME}/ros2_overlay_ws/install/setup.bash" ] && ! ros2 pkg prefix foxglove_msgs >/dev/null 2>&1; then
+  _hsa_pwd="$PWD"; cd "${HOME}/ros2_overlay_ws/install" && . ./setup.bash; cd "$_hsa_pwd"; unset _hsa_pwd
+fi
