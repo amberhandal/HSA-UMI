@@ -1,4 +1,4 @@
-# fer_arm_controller for MOCK HARDWARE (fer_bringup.launch.py use_fake_hardware:=true): the
+# fer_arm_controller for MOCK HARDWARE (bringup.launch.py use_fake_hardware:=true): the
 # position-commanded variant, because mock_components/GenericSystem mirrors position commands into its
 # state and ignores effort. Never for the robot. From NU-MSR's ros2_controllers.yaml, plus `type` (see
 # fer_arm_controller.yaml).

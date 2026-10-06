@@ -1,5 +1,5 @@
 # fer_arm_controller for the ROBOT: the joint-trajectory controller the home service moves the arm
-# through, spawned by fer_bringup.launch.py. Effort-commanded, so it holds the same <joint>/effort
+# through, spawned by bringup.launch.py. Effort-commanded, so it holds the same <joint>/effort
 # interfaces the streaming impedance controller claims and the two switch without a libfranka mode change.
 #
 # NU-MSR's franka_fer_moveit_config/config/fer_real_controllers.yaml (m-elwin/franka_ros2, branch panda),

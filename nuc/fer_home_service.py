@@ -134,7 +134,7 @@ class FerHomeService(Node):
         # Fail loudly at startup rather than on the first /polyumi/home call.
         if not self._exec.wait_for_server(timeout_sec=10.0):
             self.get_logger().error(
-                f'{ACTION_NAME} NOT found after 10s -- is fer_bringup.launch.py up with '
+                f'{ACTION_NAME} NOT found after 10s -- is bringup.launch.py up with '
                 f'{TRAJECTORY_CONTROLLER} spawned?'
             )
         else:
@@ -317,7 +317,7 @@ class FerHomeService(Node):
             received_at = self._joint_state_at
         if msg is None:
             return None, (
-                f'nothing has been published on {JOINT_STATE_TOPIC} -- is fer_bringup.launch.py up with '
+                f'nothing has been published on {JOINT_STATE_TOPIC} -- is bringup.launch.py up with '
                 'the joint_state_broadcaster spawned?'
             )
         age_s = (self.get_clock().now() - received_at).nanoseconds / 1e9
