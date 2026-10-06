@@ -17,15 +17,16 @@
     max_rot_speed: 0.15            # rad/s at full puck deflection
 
     workspace:                     # base-frame box the TCP target is clipped to
-      # Sized for the bare flange and well inside the FER's 0.855 m reach: a target the arm cannot reach
-      # has the controller pushing at full clip force. Re-derive when the wrist goes on: its plate sits
-      # PLATE_HEIGHT_Z (0.15 m) beyond the flange, so x_max can grow by about that much.
-      x_min: 0.25
-      x_max: 0.72
-      y_min: -0.35
-      y_max: 0.35
-      z_min: 0.05
-      z_max: 0.5
+      # The bare-flange box grown 0.15 m on every side for the wrist (its plate sits PLATE_HEIGHT_Z, 0.15 m,
+      # beyond the flange) and the key-in-hole lock. Only a clip on the target, not a collision check: a
+      # target the arm cannot reach, or one inside the table, has the controller pushing at full clip force.
+      # z_min is below the base's mounting plane, so watch the table when going low.
+      x_min: 0.10
+      x_max: 0.87
+      y_min: -0.50
+      y_max: 0.50
+      z_min: -0.10
+      z_max: 0.65
 
     input_source: spacemouse       # spacemouse | fake_sine | none
     spacemouse:
