@@ -10,13 +10,14 @@
       ros2 service call /hsa_recorder/export_zip    std_srvs/srv/Trigger "{}"
       ros2 run hsa_ros2 export_dataset /tmp/hsa_desk
 
-  Nothing here talks to a robot: the teleop runs with execute:=false.
+  Nothing here talks to a robot: the teleop runs with execute:=false. ui:=true adds the collect_ui window.
 -->
 <launch>
   <arg name="output_dir" default="/tmp/hsa_desk"/>
   <arg name="plan" default="" description="optional per-episode plan CSV"/>
   <arg name="recorder_config" default="$(find-pkg-share hsa_ros2)/config/recorder.yaml"/>
   <arg name="teleop_config" default="$(find-pkg-share hsa_ros2)/config/teleop.yaml"/>
+  <arg name="ui" default="false" description="open the collect_ui window (needs a display)"/>
 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="fake_arm_tf" output="screen"
         args="--x 0.5 --y 0.0 --z 0.3 --roll 3.14159 --pitch 0 --yaw 0 --frame-id fer_link0 --child-frame-id hsa_tcp"/>
@@ -33,4 +34,5 @@
     <param name="output_dir" value="$(var output_dir)"/>
     <param name="plan" value="$(var plan)"/>
   </node>
+  <node pkg="hsa_ros2" exec="collect_ui" name="collect_ui" output="screen" if="$(var ui)"/>
 </launch>
