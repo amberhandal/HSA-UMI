@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import pathlib
 import threading
+import json
 import time
 from collections import deque
 
@@ -29,7 +30,7 @@ from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException  # type: ignore[attr-defined]
 
@@ -164,6 +165,9 @@ class DemoRecorder(Node):
         self._recording = False
         self._steps: list[dict] = []
         self._episode_t0: float | None = None
+        self._wrench_ages: list[float] = []
+        self._wrench_missing = 0
+        self._last_wrench_age: float | None = None
         self._frame_count = 0
         self._tf_fail = 0
         self._stale_target = 0
@@ -199,6 +203,8 @@ class DemoRecorder(Node):
             self.create_service(Trigger, f'/hsa_recorder/{name}', cb)
 
         self.create_timer(5.0, self._status)
+        self._status_pub = self.create_publisher(String, '/hsa_recorder/status', 10)
+        self.create_timer(0.1, self._publish_status)
         self.get_logger().info(
             f'hsa_recorder: {self._writer.summary().splitlines()[0]} | image {p("image_topic")} every '
             f'{self._every_n} frame(s) | TF {self._base} -> {self._tcp} @ stamp - {self._lat_cam}s | '
@@ -319,8 +325,15 @@ class DemoRecorder(Node):
             step[dw.KEY_WRIST_CUR] = dw.interp_at(times, [s[2] for s in servo], t_s)
         if self._wrench_on:
             wr = list(self._wrench)
-            held = dw.latest_before([w[0] for w in wr], [w[1] for w in wr], t_s) if wr else None
-            step[dw.KEY_WRENCH] = held if held is not None else np.full(6, np.nan)
+            times = np.array([w[0] for w in wr], dtype=np.float64)
+            i = int(np.searchsorted(times, t_s, side='right')) - 1 if wr else -1
+            if i < 0:
+                step[dw.KEY_WRENCH] = np.full(6, np.nan)
+                self._wrench_missing += 1
+            else:
+                step[dw.KEY_WRENCH] = wr[i][1]
+                self._last_wrench_age = t_s - float(times[i])
+                self._wrench_ages.append(self._last_wrench_age)
         return step
 
     # ------------------------------------------------------------------------------------------
@@ -344,7 +357,8 @@ class DemoRecorder(Node):
             self._steps = []
             self._recording = True
             self._episode_t0 = time.time()
-            self._tf_fail = self._stale_target = 0
+            self._tf_fail = self._stale_target = self._wrench_missing = 0
+            self._wrench_ages = []
         resp.success = True
         resp.message = f'recording episode {self._writer.n_episodes}: {self._plan.describe()}' + (
             f' | condition: {self._condition()}' if self._condition() else ''
@@ -386,6 +400,7 @@ class DemoRecorder(Node):
                 'tf_lookup_failures': self._tf_fail,
                 'stale_target_frames': self._stale_target,
                 'max_stage': int(arrays[dw.KEY_STAGE].max()),
+                'wrench_sample_age_s': self._wrench_age_stats(),
                 'keys': sorted(arrays),
             },
         )
@@ -443,6 +458,40 @@ class DemoRecorder(Node):
         return resp
 
     # ------------------------------------------------------------------------------------------
+
+    def _wrench_age_stats(self) -> dict | None:
+        """Age of the wrench sample paired with each step: how far the force lagged the frame."""
+        if not self._wrench_on:
+            return None
+        ages = np.array(self._wrench_ages, dtype=np.float64)
+        return {
+            'median': float(np.median(ages)) if ages.size else None,
+            'max': float(ages.max()) if ages.size else None,
+            'missing_steps': int(self._wrench_missing),
+        }
+
+    def _publish_status(self) -> None:
+        """Publish the recorder state as JSON for collect_ui (10 Hz)."""
+        with self._lock:
+            rec, n, t0 = self._recording, len(self._steps), self._episode_t0
+        self._status_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        'episode': self._writer.n_episodes,
+                        'recording': rec,
+                        'elapsed_s': (time.time() - t0) if (rec and t0) else 0.0,
+                        't0': t0 if rec else None,
+                        'steps': n,
+                        'store_episodes': self._writer.n_episodes,
+                        'store_steps': self._writer.n_steps,
+                        'wrench_age_ms': None if self._last_wrench_age is None else self._last_wrench_age * 1e3,
+                        'condition': self._condition(),
+                        'plan': self._plan.describe(),
+                    }
+                )
+            )
+        )
 
     def _status(self) -> None:
         with self._lock:
