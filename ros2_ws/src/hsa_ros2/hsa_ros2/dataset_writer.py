@@ -271,6 +271,21 @@ class ReplayBufferWriter:
         return out
 
 
+def open_replay_buffer(path: str | pathlib.Path) -> zarr.Group:
+    """
+    Open a dataset read-only.
+
+    ``path`` is a session directory (its ``replay_buffer.zarr``), the zarr directory itself, or an
+    exported ``.zarr.zip``.
+    """
+    p = pathlib.Path(path).expanduser()
+    if p.is_dir() and (p / 'replay_buffer.zarr').exists():
+        p = p / 'replay_buffer.zarr'
+    if p.suffix == '.zip':
+        return zarr.group(zarr.ZipStore(str(p), mode='r'))
+    return zarr.open_group(str(p), mode='r')
+
+
 def open_zip_summary(zip_path: str | pathlib.Path) -> str:
     """Reopen an exported ``.zarr.zip`` the way UmiDataset does and describe it (a sanity check)."""
     with zarr.ZipStore(str(zip_path), mode='r') as store:
