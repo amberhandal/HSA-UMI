@@ -196,6 +196,7 @@ class DemoRecorder(Node):
         for name, cb in (
             ('start_episode', self._srv_start),
             ('stop_episode', self._srv_stop),
+            ('stop_failure', self._srv_stop_failure),
             ('drop_episode', self._srv_drop),
             ('next', self._srv_next),
             ('export_zip', self._srv_export),
@@ -367,6 +368,13 @@ class DemoRecorder(Node):
         return resp
 
     def _srv_stop(self, req, resp):
+        return self._stop(resp, 'success')
+
+    def _srv_stop_failure(self, req, resp):
+        """Save the episode labelled a failure: kept for analysis, left out of the training export."""
+        return self._stop(resp, 'failure')
+
+    def _stop(self, resp, outcome: str):
         with self._lock:
             if not self._recording:
                 resp.success, resp.message = False, 'not recording'
@@ -385,6 +393,7 @@ class DemoRecorder(Node):
             idx,
             {
                 'episode': idx,
+                'outcome': outcome,
                 'n_steps': len(steps),
                 'duration_s': duration,
                 'started_at': t0,
@@ -410,7 +419,7 @@ class DemoRecorder(Node):
             else f' (SHORT: under {self._min_steps} steps, the sampler will draw nothing from it)'
         )
         resp.success = True
-        resp.message = f'saved episode {idx}: {len(steps)} steps, {duration:.1f}s, {self._tf_fail} TF drops{short}'
+        resp.message = f'saved episode {idx} ({outcome.upper()}): {len(steps)} steps, {duration:.1f}s, {self._tf_fail} TF drops{short}'
         if self._advance_on_save:
             resp.message += f' | next: {self._plan.advance()}'
         self.get_logger().info(resp.message)
@@ -449,10 +458,16 @@ class DemoRecorder(Node):
         if self._writer.n_episodes == 0:
             resp.success, resp.message = False, 'store is empty'
             return resp
-        out = self._writer.export_zip()
+        # Failures are kept in the store for analysis but never trained on.
+        outcomes = self._writer.episode_outcomes()
+        keep = [i for i, o in enumerate(outcomes) if o != 'failure']
+        if not keep:
+            resp.success, resp.message = False, 'every episode is a failure; nothing to export'
+            return resp
+        out = self._writer.export_zip(episodes=keep)
         resp.success, resp.message = (
             True,
-            f'exported {out} ({self._writer.n_episodes} episodes, {self._writer.n_steps} steps)',
+            f'exported {out} ({len(keep)} episodes; {len(outcomes) - len(keep)} failures left out)',
         )
         self.get_logger().info(resp.message)
         return resp

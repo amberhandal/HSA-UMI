@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import tempfile
 import time
 import zipfile
 
@@ -254,21 +255,54 @@ class ReplayBufferWriter:
         path.write_text(json.dumps(record, indent=2, default=str))
         return path
 
-    def export_zip(self, out_path: str | pathlib.Path | None = None) -> pathlib.Path:
+    def episode_outcomes(self) -> list[str]:
         """
-        Pack the directory store into a ``.zarr.zip`` readable by ``zarr.ZipStore`` / ``UmiDataset``.
+        Return each episode's outcome from its sidecar: 'success' or 'failure'.
 
-        The zip holds the store's *contents* at its root (``.zgroup``, ``data/...``); a top-level folder inside
+        Episodes without a sidecar or without the field (recorded before outcomes existed) count as successes.
+        """
+        out = []
+        for i in range(self.n_episodes):
+            f = self.output_dir / 'episodes' / f'episode_{i:04d}.json'
+            try:
+                out.append(str(json.loads(f.read_text()).get('outcome', 'success')))
+            except (OSError, ValueError):
+                out.append('success')
+        return out
+
+    def export_zip(
+        self, out_path: str | pathlib.Path | None = None, episodes: list[int] | None = None
+    ) -> pathlib.Path:
+        """
+        Pack the store into a .zarr.zip readable by zarr.ZipStore / UmiDataset.
+
+        episodes keeps only those episode indices (copied into a temporary store first); None keeps all.
+        The zip holds the store's *contents* at its root (.zgroup, data/...); a top-level folder inside
         the zip would break ZipStore. Chunks are already Blosc-compressed, so the zip itself stores them uncompressed.
         """
         out = pathlib.Path(out_path) if out_path else self.output_dir / f'{self.output_dir.name}.zarr.zip'
-        tmp = out.with_suffix(out.suffix + '.tmp')
-        with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
-            for f in sorted(self.zarr_path.rglob('*')):
-                if f.is_file():
-                    zf.write(f, f.relative_to(self.zarr_path).as_posix())
-        tmp.replace(out)
-        return out
+        if episodes is None or list(episodes) == list(range(self.n_episodes)):
+            return _zip_store(self.zarr_path, out)
+        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix='.export_') as tmp:
+            subset = ReplayBufferWriter(tmp, attrs=dict(self.meta.attrs))
+            ends = self.episode_ends
+            starts = np.concatenate([[0], ends[:-1]])
+            for i in episodes:
+                a, b = int(starts[i]), int(ends[i])
+                subset.add_episode({k: self.data[k][a:b] for k in self.keys()})
+            subset.meta.attrs['source_episodes'] = [int(i) for i in episodes]
+            return _zip_store(subset.zarr_path, out)
+
+
+def _zip_store(zarr_path: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
+    """Zip a directory store's contents (not the folder itself) into ``out``, atomically."""
+    tmp = out.with_suffix(out.suffix + '.tmp')
+    with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+        for f in sorted(zarr_path.rglob('*')):
+            if f.is_file():
+                zf.write(f, f.relative_to(zarr_path).as_posix())
+    tmp.replace(out)
+    return out
 
 
 def open_replay_buffer(path: str | pathlib.Path) -> zarr.Group:

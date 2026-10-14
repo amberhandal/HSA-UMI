@@ -6,9 +6,11 @@ ROS-free, so it runs anywhere zarr is installed (the ROS interpreter, or the ana
     ros2 run hsa_ros2 export_dataset ~/hsa_data/peg_v1                   # summary only
     ros2 run hsa_ros2 export_dataset ~/hsa_data/peg_v1 --episodes        # per-episode ledger from the sidecars
     ros2 run hsa_ros2 export_dataset ~/hsa_data/peg_v1 --zip             # -> ~/hsa_data/peg_v1/peg_v1.zarr.zip
+    ros2 run hsa_ros2 export_dataset ~/hsa_data/peg_v1 --zip --include-failures   # keep failed episodes too
     python3 -m hsa_ros2.export_dataset ~/hsa_data/peg_v1 --zip -o /data/peg_v1.zarr.zip
     python3 -m hsa_ros2.export_dataset --check /data/peg_v1.zarr.zip     # reopen a zip the way UmiDataset does
 
+Episodes saved as failures (teleop key f) are left out of the zip unless --include-failures is given.
 The recorder's own `/hsa_recorder/export_zip` service does the same as `--zip` while it runs.
 """
 
@@ -32,13 +34,13 @@ def list_episodes(d: pathlib.Path) -> int:
     recs = [json.loads(f.read_text()) for f in files]
     cols = sorted({k for r in recs for k in (r.get('plan') or {})})
     head = (
-        f'{"ep":>4} {"steps":>5} {"dur s":>6}  {"condition":16s} ' + ' '.join(f'{c:12s}' for c in cols) + ' wrist_set'
+        f'{"ep":>4} {"outcome":8s} {"steps":>5} {"dur s":>6}  {"condition":16s} ' + ' '.join(f'{c:12s}' for c in cols) + ' wrist_set'
     )
     print(head)
     for r in recs:
         plan = r.get('plan') or {}
         print(
-            f'{r["episode"]:4d} {r["n_steps"]:5d} {r["duration_s"]:6.1f}  {str(r.get("condition", ""))[:16]:16s} '
+            f'{r["episode"]:4d} {r.get("outcome", "success"):8s} {r["n_steps"]:5d} {r["duration_s"]:6.1f}  {str(r.get("condition", ""))[:16]:16s} '
             + ' '.join(f'{str(plan.get(c, ""))[:12]:12s}' for c in cols)
             + f' {r.get("wrist_set", "")}'
         )
@@ -51,6 +53,9 @@ def main(argv=None) -> int:
     ap.add_argument('output_dir', nargs='?', help='recorder output dir (contains replay_buffer.zarr)')
     ap.add_argument('--zip', action='store_true', help='pack into a .zarr.zip')
     ap.add_argument('-o', '--out', default=None, help='zip path (default: <output_dir>/<name>.zarr.zip)')
+    ap.add_argument(
+        '--include-failures', action='store_true', help='with --zip: keep episodes saved as failures'
+    )
     ap.add_argument('--check', metavar='ZIP', help='reopen an exported .zarr.zip via zarr.ZipStore and summarise it')
     ap.add_argument(
         '--episodes', action='store_true', help='list the per-episode sidecars: steps, condition, plan columns'
@@ -71,7 +76,10 @@ def main(argv=None) -> int:
     w = dw.ReplayBufferWriter(d)
     print(w.summary())
     if args.zip:
-        out = w.export_zip(args.out)
+        outcomes = w.episode_outcomes()
+        keep = [i for i, o in enumerate(outcomes) if args.include_failures or o != 'failure']
+        print(f'{outcomes.count("success")} success / {outcomes.count("failure")} failure; exporting {len(keep)}')
+        out = w.export_zip(args.out, episodes=keep)
         print(f'wrote {out} ({out.stat().st_size / 1e6:.1f} MB)')
         print(dw.open_zip_summary(out))
     return 0

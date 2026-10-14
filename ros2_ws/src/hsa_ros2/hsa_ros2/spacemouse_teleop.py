@@ -10,7 +10,7 @@ needs a TTY):
     ros2 run hsa_ros2 spacemouse_teleop --ros-args -p execute:=true ...       # MOVES THE ARM
     ros2 run hsa_ros2 spacemouse_teleop --ros-args -p input_source:=fake_sine # desk test, no device
 
-Keys: c start episode, s stop, Backspace drop, Space stage+1, n skip to the next plan row,
+Keys: c start episode, s save, f save as failure, Backspace drop, Space stage+1, n skip to the next plan row,
 p print pose, r re-seed target from TF, x toggle wrist stiff/soft, q quit.
 """
 
@@ -294,7 +294,7 @@ class SpacemouseTeleop(Node):
         prefix = str(p('recorder_service_prefix'))
         self._recorder = {
             name: self.create_client(Trigger, f'{prefix}/{name}')
-            for name in ('start_episode', 'stop_episode', 'drop_episode', 'next')
+            for name in ('start_episode', 'stop_episode', 'stop_failure', 'drop_episode', 'next')
         }
 
         # --- Control timer: rclpy calls _tick every 1/hz seconds from spin() ----------------
@@ -311,7 +311,8 @@ class SpacemouseTeleop(Node):
             f'{self._max_pos_speed} m/s, {self._max_rot_speed} rad/s | frames {self._base} -> {self._tcp}'
         )
         self.get_logger().info(
-            'keys: c start  s stop  Backspace drop  Space stage+1  n skip plan row  p pose  r reseed  x wrist  q quit'
+            'keys: c start  s save  f save as failure  Backspace drop  Space stage+1  n skip plan row  '
+            'p pose  r reseed  x wrist  q quit'
         )
 
     # ------------------------------------------------------------------------------------------
@@ -371,6 +372,8 @@ class SpacemouseTeleop(Node):
             self._call_recorder('start_episode')
         elif ch == 's':
             self._call_recorder('stop_episode')
+        elif ch == 'f':
+            self._call_recorder('stop_failure')
         elif ch in ('\x7f', '\x08'):  # Backspace
             self._call_recorder('drop_episode')
         elif ch == ' ':

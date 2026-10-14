@@ -3,7 +3,7 @@ Live view for demo collection: the camera image with the demo number, force and 
 
     ros2 run hsa_ros2 collect_ui --ros-args -p latency.camera:=0.03
 
-Keys in the window: c start an episode, s stop and save it, backspace twice within 2 s drop it,
+Keys in the window: c start an episode, s save it, f save it as a failure, backspace twice within 2 s drop it,
 q close the view. The force shown is the wrench sample the recorder pairs with that frame (the
 newest sample stamped at or before the frame's capture instant) and its age is printed next to it,
 so the pairing is visible while collecting. Timestamps are the frame's capture instant.
@@ -25,7 +25,7 @@ from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-RECORDER_SERVICES = ('start_episode', 'stop_episode', 'drop_episode')
+RECORDER_SERVICES = ('start_episode', 'stop_episode', 'stop_failure', 'drop_episode')
 
 
 def pair_force(times, wrenches, t: float) -> tuple[np.ndarray | None, float | None]:
@@ -112,7 +112,7 @@ class CollectUI(Node):
         self._recorder_clients = {name: self.create_client(Trigger, f'{prefix}/{name}') for name in RECORDER_SERVICES}
         cv2.namedWindow(self._window, cv2.WINDOW_AUTOSIZE)
         self.create_timer(1.0 / 30.0, self._tick)
-        self.get_logger().info(f'collect_ui: {p("image_topic")} | force {p("wrench.topic")} | keys c s backspace q')
+        self.get_logger().info(f'collect_ui: {p("image_topic")} | force {p("wrench.topic")} | keys c s f backspace q')
 
     def _image_cb(self, msg: Image) -> None:
         bgr = image_to_bgr(msg)
@@ -158,6 +158,8 @@ class CollectUI(Node):
             self._call('start_episode')
         elif key == ord('s'):
             self._call('stop_episode')
+        elif key == ord('f'):
+            self._call('stop_failure')
         elif key in (8, 127):
             now = time.monotonic()
             if now - self._last_backspace < 2.0:

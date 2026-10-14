@@ -82,3 +82,33 @@ def test_interp_and_hold():
     assert np.allclose(dw.latest_before(times, values, 1.5), [1.0, 20.0])
     assert dw.latest_before(times, values, -0.1) is None
     assert dw.interp_at(np.array([]), np.zeros((0, 2)), 0.0) is None
+
+
+def test_failures_are_left_out_of_the_export(tmp_path):
+    """Episodes saved as failures stay in the store but never reach the training zip."""
+    w = dw.ReplayBufferWriter(tmp_path / 'ds', attrs={'source': 'test'})
+    for i, (n, outcome) in enumerate([(10, 'success'), (7, 'failure'), (12, 'success')]):
+        idx = w.add_episode(dw.assemble_episode(_steps(n, t0=10.0 * i, x0=0.1 * i)))
+        w.write_sidecar(idx, {'episode': idx, 'outcome': outcome})
+    assert w.episode_outcomes() == ['success', 'failure', 'success']
+
+    out = w.export_zip(tmp_path / 'train.zarr.zip', episodes=[0, 2])
+    with zarr.ZipStore(str(out), mode='r') as store:
+        root = zarr.group(store)
+        assert root['meta/episode_ends'][:].tolist() == [10, 22]
+        pos = root['data/robot0_eef_pos'][:]
+        assert np.allclose(pos[:10], w.data['robot0_eef_pos'][:10])
+        assert np.allclose(pos[10:], w.data['robot0_eef_pos'][17:29])
+        assert root['meta'].attrs['source_episodes'] == [0, 2]
+    assert w.n_episodes == 3, 'the store itself keeps the failure'
+    assert not list((tmp_path / 'ds').glob('.export_*')), 'the temporary subset store is cleaned up'
+
+
+def test_missing_outcome_counts_as_success(tmp_path):
+    """Datasets recorded before outcomes existed export unchanged."""
+    w = dw.ReplayBufferWriter(tmp_path / 'ds')
+    w.add_episode(dw.assemble_episode(_steps(5)))
+    w.write_sidecar(0, {'episode': 0})
+    w.add_episode(dw.assemble_episode(_steps(5, t0=5.0)))
+    assert w.episode_outcomes() == ['success', 'success']
+
