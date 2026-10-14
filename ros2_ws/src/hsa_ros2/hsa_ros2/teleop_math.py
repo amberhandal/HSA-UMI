@@ -13,7 +13,20 @@ from __future__ import annotations
 import numpy as np
 import scipy.spatial.transform as st
 
-# Maps SpaceMouse's axes onto robot base frame: robot = [-z, x, y] of device.
+# pyspacemouse's default (LEGACY) convention, as seen from the operator: x right, y away from the operator,
+# z up; roll = tilt about the forward axis, pitch = minus the tilt about the right axis, yaw = minus the twist
+# about the up axis (from its HID remap: roll <- -HID pitch, pitch <- -HID roll, yaw <- HID yaw, HID z down).
+
+# The operator's (right, forward, up) axes in the robot base frame, for each direction the operator faces.
+_OPERATOR_AXES = {
+    '+x': ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),  # behind the base, looking along +x
+    '-x': ((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),  # in front of the robot, facing the base
+    '+y': ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    '-y': ((-1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+}
+
+# The mapping of the original UMI scripts, robot = [-z, x, y] of the device (spacenav's y-up convention).
+# With pyspacemouse's z-up axes it swaps forward/back with up/down; kept only as operator_facing 'legacy'.
 SPACEMOUSE_TO_ROBOT = np.array(
     [
         [0.0, 0.0, -1.0],
@@ -22,20 +35,35 @@ SPACEMOUSE_TO_ROBOT = np.array(
     ]
 )
 
+OPERATOR_FACINGS = (*_OPERATOR_AXES, 'legacy')
 
-def map_spacemouse_axes(raw: np.ndarray, deadzone: float = 0.0) -> np.ndarray:
+
+def map_spacemouse_axes(raw: np.ndarray, deadzone: float = 0.0, operator_facing: str = 'legacy') -> np.ndarray:
     """
     Turn a raw SpaceMouse reading into a 6-vector of normalized velocities in the robot frame.
 
     :param raw: ``[x, y, z, roll, pitch, yaw]`` as pyspacemouse reports them, each in [-1, 1].
     :param deadzone: readings with |value| below this are zeroed, so a resting puck sends nothing.
-    :returns: ``[vx, vy, vz, wx, wy, wz]`` in [-1, 1], robot base axes.
+    :param operator_facing: which robot axis the operator looks along ('+x', '-x', '+y', '-y'): pushing the
+        puck away moves the TCP that way, right moves it to the operator's right, up moves it up, a tilt or
+        twist rotates about the matching axis. 'legacy' is the original UMI permutation.
+    :returns: ``[vx, vy, vz, wx, wy, wz]`` in [-1, 1], robot base axes; ``wz`` follows the knob's twist.
     """
     raw = np.asarray(raw, dtype=np.float64).copy()
     raw[np.abs(raw) < deadzone] = 0.0
     out = np.zeros(6)
-    out[:3] = SPACEMOUSE_TO_ROBOT @ raw[:3]
-    out[3:] = SPACEMOUSE_TO_ROBOT @ raw[3:]
+    if operator_facing == 'legacy':
+        out[:3] = SPACEMOUSE_TO_ROBOT @ raw[:3]
+        out[3:] = SPACEMOUSE_TO_ROBOT @ raw[3:]
+        return out
+    try:
+        right, forward, up = (np.asarray(v) for v in _OPERATOR_AXES[operator_facing])
+    except KeyError:
+        raise ValueError(f'operator_facing must be one of {OPERATOR_FACINGS}, not {operator_facing!r}') from None
+    x, y, z, roll, pitch, yaw = raw
+    out[:3] = x * right + y * forward + z * up
+    # Rotation rates about the operator's axes: tilt about right, tilt about forward, twist about up.
+    out[3:] = (-pitch) * right + roll * forward + (-yaw) * up
     return out
 
 

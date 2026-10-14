@@ -67,7 +67,7 @@ class SpacemouseSource:
     drains the device continuously and the control loop just takes a snapshot.
     """
 
-    def __init__(self, deadzone: float):
+    def __init__(self, deadzone: float, operator_facing: str = 'legacy'):
         """Open the device and start the reader thread."""
         import pyspacemouse  # imported here so the fake/none sources work on machines without it
 
@@ -77,6 +77,7 @@ class SpacemouseSource:
                 'pyspacemouse.open() failed: is the SpaceMouse plugged in and the hidraw udev rule installed?'
             )
         self._deadzone = deadzone
+        self._facing = operator_facing
         self._lock = threading.Lock()
         self._axes = np.zeros(6)
         self._buttons = [False, False]
@@ -92,7 +93,7 @@ class SpacemouseSource:
             raw = [s.x, s.y, s.z, s.roll, s.pitch, s.yaw]
             buttons = list(getattr(s, 'buttons', []) or [])
             with self._lock:
-                self._axes = map_spacemouse_axes(raw, self._deadzone)
+                self._axes = map_spacemouse_axes(raw, self._deadzone, self._facing)
                 self._buttons = [bool(buttons[i]) if i < len(buttons) else False for i in range(2)]
             time.sleep(0.005)
 
@@ -225,6 +226,9 @@ class SpacemouseTeleop(Node):
         # 'spacemouse' | 'fake_sine' | 'none'
         self.declare_parameter('input_source', 'spacemouse')
         self.declare_parameter('spacemouse.deadzone', 0.0)
+        # Which robot axis the operator looks along (+x, -x, +y, -y): pushes move the TCP the way the hand goes.
+        # 'legacy' keeps the original UMI permutation, which swaps forward/back with up/down on pyspacemouse.
+        self.declare_parameter('spacemouse.operator_facing', 'legacy')
         # base: buttons switch translate/rotate (rotation about base axes). tool_twist: x, y, z and a knob twist
         # together, the twist spinning the tool about its own axis; the rotation button still gives 'base'.
         self.declare_parameter('spacemouse.rotation_style', 'base')
@@ -272,7 +276,7 @@ class SpacemouseTeleop(Node):
         # --- Input ------------------------------------------------------------------------
         source = str(p('input_source'))
         if source == 'spacemouse':
-            self._input = SpacemouseSource(float(p('spacemouse.deadzone')))
+            self._input = SpacemouseSource(float(p('spacemouse.deadzone')), str(p('spacemouse.operator_facing')))
         elif source == 'fake_sine':
             self._input = FakeSineSource(float(p('fake_sine.period_s')), float(p('fake_sine.amplitude')))
         elif source == 'none':
@@ -323,7 +327,8 @@ class SpacemouseTeleop(Node):
         self.get_logger().info(
             f'spacemouse_teleop: {mode} | input={source} | {self._hz:g} Hz | '
             f'{self._max_pos_speed} m/s, {self._max_rot_speed} rad/s | frames {self._base} -> {self._tcp} | '
-            f'rotation {self._rotation_style}, z {"button" if self._z_needs_button else "free"}'
+            f'rotation {self._rotation_style}, z {"button" if self._z_needs_button else "free"}, '
+            f'operator facing {self.get_parameter("spacemouse.operator_facing").value}'
         )
         self.get_logger().info(
             f'keys: c start  s save  f save as failure  Backspace drop  1-{len(self._stage_names)} subtask '

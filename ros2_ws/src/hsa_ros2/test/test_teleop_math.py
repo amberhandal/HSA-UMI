@@ -7,6 +7,7 @@ Run in any venv with numpy + scipy (no ROS needed):
 """
 
 import numpy as np
+import pytest
 import scipy.spatial.transform as st
 
 from hsa_ros2.teleop_math import (
@@ -23,8 +24,8 @@ BOX = dict(x_min=0.2, x_max=0.9, y_min=-0.4, y_max=0.4, z_min=0.05, z_max=0.5)
 
 
 def test_frame_map_is_the_old_scripts_permutation():
-    """Map the device axes to robot = [-z, x, y], for translation and rotation alike (tx_zup_spnav)."""
-    axes = map_spacemouse_axes([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    """'legacy' maps the device axes to robot = [-z, x, y], for translation and rotation alike (tx_zup_spnav)."""
+    axes = map_spacemouse_axes([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], operator_facing='legacy')
     assert np.allclose(axes[:3], [-0.3, 0.1, 0.2])
     assert np.allclose(axes[3:], [-0.6, 0.4, 0.5])
 
@@ -162,3 +163,22 @@ def test_tool_twist_sign_and_z_lock_and_button_fallback():
     assert plus[2] == 0.0 and np.allclose(plus[3:], -minus[3:])
     held = integrate_target(target, axes, rotation_mode=True, z_enabled=True, **kw)
     assert np.allclose(held[:3], 0.0), 'button held: translation locked, as in base mode'
+
+
+
+def test_operator_facing_minus_x_moves_the_tcp_with_the_hand():
+    """Operator in front of the robot facing its base: away = -x, right = +y, up = +z, twist = about z."""
+    away = map_spacemouse_axes([0, 1, 0, 0, 0, 0], operator_facing='-x')
+    right = map_spacemouse_axes([1, 0, 0, 0, 0, 0], operator_facing='-x')
+    up = map_spacemouse_axes([0, 0, 1, 0, 0, 0], operator_facing='-x')
+    twist = map_spacemouse_axes([0, 0, 0, 0, 0, 1], operator_facing='-x')
+    assert np.allclose(away[:3], [-1, 0, 0]) and np.allclose(right[:3], [0, 1, 0]) and np.allclose(up[:3], [0, 0, 1])
+    assert np.allclose(twist[:5], 0) and abs(twist[5]) == 1, 'the knob twist drives only the rotation about up'
+
+
+def test_operator_facing_plus_x_and_bad_value():
+    """Behind the base: away = +x, right = -y; an unknown facing is refused."""
+    assert np.allclose(map_spacemouse_axes([0, 1, 0, 0, 0, 0], operator_facing='+x')[:3], [1, 0, 0])
+    assert np.allclose(map_spacemouse_axes([1, 0, 0, 0, 0, 0], operator_facing='+x')[:3], [0, -1, 0])
+    with pytest.raises(ValueError):
+        map_spacemouse_axes(np.zeros(6), operator_facing='north')

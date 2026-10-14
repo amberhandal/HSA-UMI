@@ -31,6 +31,10 @@
     input_source: spacemouse       # spacemouse | fake_sine | none
     spacemouse:
       deadzone: 0.0
+      operator_facing: '-x'        # you stand in front of the robot facing its base; legacy = old UMI mapping
+      rotation_style: tool_twist   # x/y/z + knob twist (spins the key about its axis); base = old button modes
+      z_needs_button: false        # up/down without holding the z button
+      twist_sign: -1.0             # knob twist direction; 1.0 spins the other way
       rotation_button: 0           # left button held -> rotation mode (translation locked)
       z_button: 1                  # right button held -> vertical motion allowed
     fake_sine:
