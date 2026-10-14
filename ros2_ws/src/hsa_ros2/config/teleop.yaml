@@ -17,16 +17,16 @@
     max_rot_speed: 0.15            # rad/s at full puck deflection
 
     workspace:                     # base-frame box the TCP target is clipped to
-      # The bare-flange box grown 0.15 m on every side for the wrist (its plate sits PLATE_HEIGHT_Z, 0.15 m,
-      # beyond the flange) and the key-in-hole lock. Only a clip on the target, not a collision check: a
-      # target the arm cannot reach, or one inside the table, has the controller pushing at full clip force.
-      # z_min is below the base's mounting plane, so watch the table when going low.
+      # Only a clip on the target, not a reach or collision check: the arm cannot follow a target outside its
+      # reach, and the impedance controller then drives a joint into its limit until the robot's position-limit
+      # reflex stops everything. So y and z_max are wide for the key-in-hole lock, while
+      # x and z_min stay where the FER can still reach with the tool on (~0.85 m from the shoulder at z 0.33).
       x_min: 0.10
       x_max: 0.87
-      y_min: -0.50
-      y_max: 0.50
+      y_min: -0.65
+      y_max: 0.65
       z_min: -0.10
-      z_max: 0.65
+      z_max: 0.80
 
     input_source: spacemouse       # spacemouse | fake_sine | none
     spacemouse:
