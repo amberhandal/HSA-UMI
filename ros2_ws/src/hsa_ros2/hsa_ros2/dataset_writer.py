@@ -41,7 +41,7 @@ KEY_ACTION = 'action'  # commanded teleop target [pos, rotvec, gripper]
 KEY_WRIST_POS = 'robot0_wrist_servo'  # servo positions (rad), when the wrist is on
 KEY_WRIST_CUR = 'robot0_wrist_current'  # servo currents (A), when the wrist is on
 KEY_WRENCH = 'robot0_ext_wrench'  # Franka external wrench, when enabled
-KEY_STAGE = 'stage'  # space-bar stage counter
+KEY_STAGE = 'stage'  # subtask index (stage_names), set by the teleop keys 1..N / Space
 KEY_TIME = 'timestamp'  # capture instant, wall-clock seconds
 
 #: Keys every episode must carry, with their per-step shape and dtype.
