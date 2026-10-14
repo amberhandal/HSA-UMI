@@ -10,7 +10,8 @@ needs a TTY):
     ros2 run hsa_ros2 spacemouse_teleop --ros-args -p execute:=true ...       # MOVES THE ARM
     ros2 run hsa_ros2 spacemouse_teleop --ros-args -p input_source:=fake_sine # desk test, no device
 
-Keys: c start episode, s save, f save as failure, Backspace drop, Space stage+1, n skip to the next plan row,
+Keys: c start episode, s save, f save as failure, Backspace drop, 1..N set the subtask (stage_names), Space next
+subtask, n skip to the next plan row,
 p print pose, r re-seed target from TF, x toggle wrist stiff/soft, q quit.
 """
 
@@ -37,6 +38,7 @@ from tf2_ros import ConnectivityException, ExtrapolationException, LookupExcepti
 # name defined in exactly one place.
 from polyumi_ros2.target_chunk import CONSUMER_HINT, TargetChunkPublisher, pose_array
 
+from hsa_ros2.dataset_writer import DEFAULT_STAGE_NAMES
 from hsa_ros2.teleop_math import (
     extrapolate_chunk,
     clamp_workspace,
@@ -235,6 +237,8 @@ class SpacemouseTeleop(Node):
         self.declare_parameter('recorder_service_prefix', '/hsa_recorder')
         self.declare_parameter('teleop_target_topic', '/hsa/teleop_target')
         self.declare_parameter('stage_topic', '/hsa/stage')
+        # Subtask names by stage index; keys 1..N select them, c resets to the first.
+        self.declare_parameter('stage_names', list(DEFAULT_STAGE_NAMES))
         self.declare_parameter('wrist_target_topic', '/hsa/target_servo')
         self.declare_parameter('preview_topic', '/polyumi/target_poses_preview')
 
@@ -288,6 +292,7 @@ class SpacemouseTeleop(Node):
             self.create_publisher(JointState, str(p('wrist_target_topic')), 10) if self._wrist_enabled else None
         )
         self._stage = 0
+        self._stage_names = [str(n) for n in p('stage_names')]
 
         # --- Service clients on the recorder ----------------------------------------------
         # Calls are asynchronous (call_async + done callback) so the control loop never blocks on the recorder.
@@ -311,7 +316,8 @@ class SpacemouseTeleop(Node):
             f'{self._max_pos_speed} m/s, {self._max_rot_speed} rad/s | frames {self._base} -> {self._tcp}'
         )
         self.get_logger().info(
-            'keys: c start  s save  f save as failure  Backspace drop  Space stage+1  n skip plan row  '
+            f'keys: c start  s save  f save as failure  Backspace drop  1-{len(self._stage_names)} subtask '
+            f'({", ".join(self._stage_names)})  Space next subtask  n skip plan row  '
             'p pose  r reseed  x wrist  q quit'
         )
 
@@ -363,6 +369,11 @@ class SpacemouseTeleop(Node):
 
         future.add_done_callback(done)
 
+    def _stage_label(self) -> str:
+        """Return 'index (name)' for the current stage, or just the index past the named ones."""
+        names = self._stage_names
+        return f'{self._stage} ({names[self._stage]})' if self._stage < len(names) else str(self._stage)
+
     def _handle_key(self, ch: str) -> bool:
         """Dispatch one keypress.  Returns False when the node should quit."""
         if ch == 'q':
@@ -370,6 +381,7 @@ class SpacemouseTeleop(Node):
         if ch == 'c':
             self._stage = 0
             self._call_recorder('start_episode')
+            self.get_logger().info(f'stage -> {self._stage_label()}')
         elif ch == 's':
             self._call_recorder('stop_episode')
         elif ch == 'f':
@@ -378,7 +390,10 @@ class SpacemouseTeleop(Node):
             self._call_recorder('drop_episode')
         elif ch == ' ':
             self._stage += 1
-            self.get_logger().info(f'stage -> {self._stage}')
+            self.get_logger().info(f'stage -> {self._stage_label()}')
+        elif ch.isdigit() and 1 <= int(ch) <= len(self._stage_names):
+            self._stage = int(ch) - 1
+            self.get_logger().info(f'stage -> {self._stage_label()}')
         elif ch == 'n':
             self._call_recorder('next')
         elif ch == 'p':

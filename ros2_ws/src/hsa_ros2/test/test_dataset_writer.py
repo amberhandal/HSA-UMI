@@ -5,6 +5,7 @@ Round-trip tests for the ROS-free ReplayBuffer writer (needs numpy + zarr 2.x).
 """
 
 import numpy as np
+import pytest
 import zarr
 
 from hsa_ros2 import dataset_writer as dw
@@ -112,3 +113,33 @@ def test_missing_outcome_counts_as_success(tmp_path):
     w.add_episode(dw.assemble_episode(_steps(5, t0=5.0)))
     assert w.episode_outcomes() == ['success', 'success']
 
+
+
+def test_stage_segments_and_names():
+    """Contiguous runs of a stage value, and names or indices both resolve."""
+    assert dw.stage_segments(np.array([0, 0, 1, 1, 1, 2, 0])) == [(0, 0, 2), (1, 2, 5), (2, 5, 6), (0, 6, 7)]
+    assert dw.stage_index('turn', dw.DEFAULT_STAGE_NAMES) == 1
+    assert dw.stage_index('2', dw.DEFAULT_STAGE_NAMES) == 2
+    with pytest.raises(ValueError):
+        dw.stage_index('wiggle', dw.DEFAULT_STAGE_NAMES)
+
+
+def test_export_one_subtask_recomputes_the_start_pose(tmp_path):
+    """--stage turn: each turn segment is its own episode, and its start pose is the segment's first pose."""
+    w = dw.ReplayBufferWriter(tmp_path / 'ds')
+    for i in range(2):
+        steps = _steps(30, t0=10.0 * i, x0=0.1 * i)
+        for k, st in enumerate(steps):
+            st[dw.KEY_STAGE] = np.array([0 if k < 10 else 1 if k < 22 else 2])
+        w.add_episode(dw.assemble_episode(steps))
+    out = w.export_zip(tmp_path / 'turn.zarr.zip', stage=1)
+    with zarr.ZipStore(str(out), mode='r') as store:
+        root = zarr.group(store)
+        assert root['meta/episode_ends'][:].tolist() == [12, 24]
+        assert set(root['data/stage'][:].reshape(-1).tolist()) == {1}
+        start = root['data/robot0_demo_start_pose'][:]
+        pos = root['data/robot0_eef_pos'][:]
+        assert np.allclose(start[0, :3], pos[0]) and np.allclose(start[12, :3], pos[12])
+        assert root['meta'].attrs['source_segments'] == [[0, 10, 22], [1, 10, 22]]
+    with pytest.raises(ValueError):
+        w.export_zip(tmp_path / 'none.zarr.zip', stage=5)

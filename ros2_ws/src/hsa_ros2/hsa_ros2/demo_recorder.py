@@ -105,6 +105,7 @@ class DemoRecorder(Node):
         self.declare_parameter('store_every_n_frames', 1)
         self.declare_parameter('teleop_target_topic', '/hsa/teleop_target')
         self.declare_parameter('stage_topic', '/hsa/stage')
+        self.declare_parameter('stage_names', list(dw.DEFAULT_STAGE_NAMES))
         self.declare_parameter('servo.enabled', False)
         self.declare_parameter('servo.topic', '/hsa/servo_state')
         self.declare_parameter('wrench.enabled', False)
@@ -409,6 +410,8 @@ class DemoRecorder(Node):
                 'tf_lookup_failures': self._tf_fail,
                 'stale_target_frames': self._stale_target,
                 'max_stage': int(arrays[dw.KEY_STAGE].max()),
+                'stage_names': list(self.get_parameter('stage_names').value),
+                'stages': self._stage_table(arrays),
                 'wrench_sample_age_s': self._wrench_age_stats(),
                 'keys': sorted(arrays),
             },
@@ -473,6 +476,21 @@ class DemoRecorder(Node):
         return resp
 
     # ------------------------------------------------------------------------------------------
+
+    def _stage_table(self, arrays: dict) -> list[dict]:
+        """One row per contiguous subtask run: index, name, step range and duration."""
+        names = list(self.get_parameter('stage_names').value)
+        t = arrays[dw.KEY_TIME].reshape(-1)
+        return [
+            {
+                'stage': value,
+                'name': names[value] if 0 <= value < len(names) else None,
+                'start_step': a,
+                'end_step': b,
+                'duration_s': float(t[b - 1] - t[a]),
+            }
+            for value, a, b in dw.stage_segments(arrays[dw.KEY_STAGE])
+        ]
 
     def _wrench_age_stats(self) -> dict | None:
         """Age of the wrench sample paired with each step: how far the force lagged the frame."""

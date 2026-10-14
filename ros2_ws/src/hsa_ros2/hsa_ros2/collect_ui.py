@@ -24,6 +24,8 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
 
+from hsa_ros2.dataset_writer import DEFAULT_STAGE_NAMES
+
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 RECORDER_SERVICES = ('start_episode', 'stop_episode', 'stop_failure', 'drop_episode')
 
@@ -39,7 +41,14 @@ def pair_force(times, wrenches, t: float) -> tuple[np.ndarray | None, float | No
     return np.asarray(wrenches[i], dtype=np.float64), float(t - times[i])
 
 
-def overlay_lines(status: dict, force: np.ndarray | None, force_age_s: float | None, t_capture_s: float, stage: int):
+def overlay_lines(
+    status: dict,
+    force: np.ndarray | None,
+    force_age_s: float | None,
+    t_capture_s: float,
+    stage: int,
+    stage_names=(),
+):
     """Compose the text lines: demo number and state, force, timestamp, stage."""
     episode = status.get('episode')
     recording = bool(status.get('recording'))
@@ -58,7 +67,8 @@ def overlay_lines(status: dict, force: np.ndarray | None, force_age_s: float | N
     stamp = time.strftime('%H:%M:%S', time.localtime(t_capture_s)) + f'.{int((t_capture_s % 1.0) * 1000):03d}'
     if recording and status.get('t0'):
         stamp += f'   t = {t_capture_s - float(status["t0"]):.3f} s'
-    return [first, force_line, stamp, f'Stage {stage}']
+    name = f': {stage_names[stage]}' if 0 <= stage < len(stage_names) else ''
+    return [first, force_line, stamp, f'Stage {stage}{name}']
 
 
 def draw_overlay(bgr: np.ndarray, lines: list[str], recording: bool) -> np.ndarray:
@@ -91,6 +101,7 @@ class CollectUI(Node):
         self.declare_parameter('wrench.topic', '/franka_robot_state_broadcaster/external_wrench_in_base_frame')
         self.declare_parameter('status_topic', '/hsa_recorder/status')
         self.declare_parameter('stage_topic', '/hsa/stage')
+        self.declare_parameter('stage_names', list(DEFAULT_STAGE_NAMES))
         self.declare_parameter('recorder_service_prefix', '/hsa_recorder')
         self.declare_parameter('latency.camera', 0.0)  # same value as the recorder's
         self.declare_parameter('buffer_seconds', 2.0)
@@ -143,7 +154,9 @@ class CollectUI(Node):
         else:
             wr = list(self._wrench)
             force, age = pair_force([s for s, _ in wr], [w for _, w in wr], self._t_capture)
-            lines = overlay_lines(self._status, force, age, self._t_capture, self._stage)
+            lines = overlay_lines(
+                self._status, force, age, self._t_capture, self._stage, self.get_parameter('stage_names').value
+            )
             img = draw_overlay(self._frame, lines, bool(self._status.get('recording')))
         cv2.imshow(self._window, img)
         key = cv2.pollKey()

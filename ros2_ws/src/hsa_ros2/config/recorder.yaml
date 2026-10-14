@@ -9,6 +9,7 @@
       camera: 0.030                     # photon -> header.stamp. ESTIMATE (half the 33 ms exposure); measure with latency_probe mode:=camera and keep equal to inference.yaml latency.gopro
       proprio: 0.001                    # libfranka stamps at read (UMI's value, not re-measured)
     store_every_n_frames: 1             # 1 -> store at the camera rate (30 Hz => obs_down_sample_steps: 3)
+    stage_names: [insert, turn, open]   # subtasks by stage index; teleop keys 1-3 select them
     teleop_target_topic: /hsa/teleop_target
     stage_topic: /hsa/stage
     servo:

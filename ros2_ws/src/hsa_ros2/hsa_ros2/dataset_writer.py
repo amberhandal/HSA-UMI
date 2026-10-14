@@ -105,6 +105,49 @@ def latest_before(times: np.ndarray, values: np.ndarray, t: float) -> np.ndarray
 # ----------------------------------------------------------------------------------------------
 
 
+#: Default subtask names, indexed by the ``stage`` value (teleop keys 1..N set them). Task configs override
+#: this with the ``stage_names`` parameter; the recorder writes the list into every sidecar.
+DEFAULT_STAGE_NAMES = ('insert', 'turn', 'open')
+
+
+def stage_index(stage: int | str, names) -> int:
+    """Resolve a stage given as an index or a name (case-insensitive) against ``names``."""
+    if isinstance(stage, int) or str(stage).lstrip('-').isdigit():
+        return int(stage)
+    lowered = [str(n).lower() for n in names]
+    try:
+        return lowered.index(str(stage).lower())
+    except ValueError:
+        raise ValueError(f'unknown stage {stage!r}; expected an index or one of {list(names)}') from None
+
+
+def stage_segments(stages: np.ndarray) -> list[tuple[int, int, int]]:
+    """Return ``(stage, start, end)`` for each contiguous run of one stage value (``end`` exclusive)."""
+    stages = np.asarray(stages).reshape(-1)
+    if stages.size == 0:
+        return []
+    cuts = np.flatnonzero(np.diff(stages)) + 1
+    starts = np.concatenate([[0], cuts])
+    ends = np.concatenate([cuts, [stages.size]])
+    return [(int(stages[a]), int(a), int(b)) for a, b in zip(starts, ends)]
+
+
+def slice_episode(arrays: dict[str, np.ndarray], start: int, end: int) -> dict[str, np.ndarray]:
+    """
+    Cut steps ``[start, end)`` out of an assembled episode as an episode of its own.
+
+    The start/end pose broadcasts are recomputed for the slice, so pose features relative to the episode
+    start (``*_wrt_start``) refer to the start of the subtask, not of the whole demonstration.
+    """
+    out = {k: np.asarray(v[start:end]) for k, v in arrays.items()}
+    n = end - start
+    pose0 = np.concatenate([out[KEY_POS][0], out[KEY_ROT][0]]).astype(np.float32)
+    pose1 = np.concatenate([out[KEY_POS][-1], out[KEY_ROT][-1]]).astype(np.float32)
+    out[KEY_START] = np.repeat(pose0[None], n, axis=0)
+    out[KEY_END] = np.repeat(pose1[None], n, axis=0)
+    return out
+
+
 def assemble_episode(steps: list[dict]) -> dict[str, np.ndarray]:
     """
     Stack a list of per-step dicts into per-key arrays and add the start/end pose broadcasts.
@@ -271,26 +314,47 @@ class ReplayBufferWriter:
         return out
 
     def export_zip(
-        self, out_path: str | pathlib.Path | None = None, episodes: list[int] | None = None
+        self,
+        out_path: str | pathlib.Path | None = None,
+        episodes: list[int] | None = None,
+        stage: int | None = None,
+        min_steps: int = 2,
     ) -> pathlib.Path:
         """
-        Pack the store into a .zarr.zip readable by zarr.ZipStore / UmiDataset.
+        Pack the store into a ``.zarr.zip`` readable by ``zarr.ZipStore`` / ``UmiDataset``.
 
-        episodes keeps only those episode indices (copied into a temporary store first); None keeps all.
-        The zip holds the store's *contents* at its root (.zgroup, data/...); a top-level folder inside
+        ``episodes`` keeps only those episode indices (copied into a temporary store first); None keeps all.
+        ``stage`` exports only the frames labelled with that subtask: every contiguous run of it becomes an
+        episode of its own (runs shorter than ``min_steps`` are skipped).
+        The zip holds the store's *contents* at its root (``.zgroup``, ``data/...``); a top-level folder inside
         the zip would break ZipStore. Chunks are already Blosc-compressed, so the zip itself stores them uncompressed.
         """
         out = pathlib.Path(out_path) if out_path else self.output_dir / f'{self.output_dir.name}.zarr.zip'
-        if episodes is None or list(episodes) == list(range(self.n_episodes)):
+        if stage is None and (episodes is None or list(episodes) == list(range(self.n_episodes))):
             return _zip_store(self.zarr_path, out)
+        episodes = list(range(self.n_episodes)) if episodes is None else list(episodes)
         with tempfile.TemporaryDirectory(dir=self.output_dir, prefix='.export_') as tmp:
             subset = ReplayBufferWriter(tmp, attrs=dict(self.meta.attrs))
             ends = self.episode_ends
             starts = np.concatenate([[0], ends[:-1]])
+            source = []
             for i in episodes:
                 a, b = int(starts[i]), int(ends[i])
-                subset.add_episode({k: self.data[k][a:b] for k in self.keys()})
-            subset.meta.attrs['source_episodes'] = [int(i) for i in episodes]
+                arrays = {k: self.data[k][a:b] for k in self.keys()}
+                if stage is None:
+                    subset.add_episode(arrays)
+                    source.append([int(i), 0, b - a])
+                    continue
+                for value, s0, s1 in stage_segments(arrays[KEY_STAGE]):
+                    if value == stage and s1 - s0 >= min_steps:
+                        subset.add_episode(slice_episode(arrays, s0, s1))
+                        source.append([int(i), s0, s1])
+            if subset.n_episodes == 0:
+                raise ValueError(f'no episode has a stage-{stage} segment of at least {min_steps} steps')
+            subset.meta.attrs['source_episodes'] = [r[0] for r in source]
+            subset.meta.attrs['source_segments'] = source  # [episode, start_step, end_step] per exported episode
+            if stage is not None:
+                subset.meta.attrs['stage'] = int(stage)
             return _zip_store(subset.zarr_path, out)
 
 
