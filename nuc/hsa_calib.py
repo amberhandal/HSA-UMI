@@ -15,11 +15,13 @@ from typing import NamedTuple
 
 ARM_ID = 'fer'
 
-# HSA_TOOL=bare: nothing on the flange, so the TCP is the flange itself and the payload is zero. Set it
-# in the shell that launches bringup (nuc/station_env.sh passes it through); the default is the wrist.
+# What is on the flange, from HSA_TOOL in the shell that launches bringup (nuc/station_env.sh passes it
+# through): wrist = HSA wrist (default), rigid = metal base plate + rigid key mount, bare = nothing (TCP at the
+# flange, zero payload).
+TOOLS = ('wrist', 'rigid', 'bare')
 TOOL = os.environ.get('HSA_TOOL', 'wrist')
-if TOOL not in ('wrist', 'bare'):
-    raise ValueError(f"HSA_TOOL must be 'wrist' or 'bare', not {TOOL!r}")
+if TOOL not in TOOLS:
+    raise ValueError(f'HSA_TOOL must be one of {TOOLS}, not {TOOL!r}')
 TCP_PARENT = f'{ARM_ID}_link8'
 TCP_CHILD = 'hsa_tcp'
 #: The frame franka reports O_T_EE in, as the streaming controller names it (``<arm_id>_hand_tcp``).
@@ -35,7 +37,9 @@ CALIBRATION_STATUS = (
 # --------------------------------------------------------------------------------------------
 # The TCP: the moving plate's tool surface, centred, at the neutral servo setpoint. ESTIMATE. Along
 # the flange axis only: the base plate bolts to the flange's bolt circle, so x and y are 0 by symmetry.
-PLATE_HEIGHT_Z = 0.0 if TOOL == 'bare' else 0.150  # m, flange face -> plate tool surface, neutral servos
+WRIST_TCP_Z = 0.150  # m, flange face -> wrist plate tool surface at neutral servos. ESTIMATE.
+RIGID_TCP_Z = 0.150  # m, flange face -> key mount TCP. ESTIMATE: placeholder, measure and replace.
+PLATE_HEIGHT_Z = {'wrist': WRIST_TCP_Z, 'rigid': RIGID_TCP_Z, 'bare': 0.0}[TOOL]
 
 TCP_XYZ = (0.0, 0.0, PLATE_HEIGHT_Z)
 
@@ -94,7 +98,22 @@ HSA_WRIST = PayloadPart(
     'HSA wrist', 12.9 * OZ, BASE_PLATE_THICKNESS + _WRIST_HEIGHT / 2, (0.12, 0.12, max(_WRIST_HEIGHT, 0.01))
 )
 
-PAYLOAD_PARTS: tuple[PayloadPart, ...] = () if TOOL == 'bare' else (BASE_PLATE, HSA_WRIST)
+#: Rigid setup: a metal base plate (always on for demos) and the rigid key attachment, weighed 2026-10-13.
+METAL_PLATE_THICKNESS = 0.006  # m. ESTIMATE.
+METAL_BASE_PLATE = PayloadPart(
+    'metal base plate', 0.100, METAL_PLATE_THICKNESS / 2, (0.12, 0.12, METAL_PLATE_THICKNESS)
+)
+_MOUNT_LENGTH = max(RIGID_TCP_Z - METAL_PLATE_THICKNESS, 0.01)
+#: CoM at mid-length of the mount, a slender box along the flange axis. ESTIMATE.
+KEY_MOUNT = PayloadPart(
+    'rigid key mount', 0.079, METAL_PLATE_THICKNESS + _MOUNT_LENGTH / 2, (0.04, 0.04, _MOUNT_LENGTH)
+)
+
+PAYLOAD_PARTS: tuple[PayloadPart, ...] = {
+    'wrist': (BASE_PLATE, HSA_WRIST),
+    'rigid': (METAL_BASE_PLATE, KEY_MOUNT),
+    'bare': (),
+}[TOOL]
 
 PAYLOAD_MASS = sum(part.mass for part in PAYLOAD_PARTS)  # kg
 

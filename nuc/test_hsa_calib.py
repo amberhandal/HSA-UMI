@@ -122,3 +122,33 @@ def test_combined_inertia_exceeds_each_part_about_its_own_com():
     own_ixx = hsa_calib.HSA_WRIST.mass / 12.0 * (d**2 + h**2)
     ixx, iyy = hsa_calib.payload_inertia_flange()[0], hsa_calib.payload_inertia_flange()[4]
     assert ixx > own_ixx and iyy > own_ixx
+
+
+def test_rigid_preset_carries_the_metal_plate_and_key_mount(monkeypatch):
+    """HSA_TOOL=rigid: 100 g metal base plate + 79 g key mount, no HSA wrist."""
+    import importlib
+
+    monkeypatch.setenv('HSA_TOOL', 'rigid')
+    rigid = importlib.reload(hsa_calib)
+    try:
+        assert [p.name for p in rigid.PAYLOAD_PARTS] == ['metal base plate', 'rigid key mount']
+        assert rigid.PAYLOAD_MASS == pytest.approx(0.179)
+        assert rigid.TCP_XYZ == (0.0, 0.0, rigid.RIGID_TCP_Z)
+        assert all(v > 0 for v in rigid.payload_inertia_flange()[::4])
+        assert 'tool=rigid' in rigid.describe()
+    finally:
+        monkeypatch.delenv('HSA_TOOL')
+        importlib.reload(hsa_calib)
+
+
+def test_unknown_tool_is_refused(monkeypatch):
+    """A typo in HSA_TOOL must not silently fall back to the wrist's payload."""
+    import importlib
+
+    monkeypatch.setenv('HSA_TOOL', 'rigd')
+    try:
+        with pytest.raises(ValueError, match='rigid'):
+            importlib.reload(hsa_calib)
+    finally:
+        monkeypatch.delenv('HSA_TOOL')
+        importlib.reload(hsa_calib)

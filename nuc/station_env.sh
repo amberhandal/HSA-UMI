@@ -94,7 +94,7 @@ esac
 : "${HSA_TOOL:=wrist}"; export HSA_TOOL
 echo "[station_env] HSA_ROBOT=$HSA_ROBOT ROS_DISTRO=${ROS_DISTRO:-?} franka workspace ${STATION_FRANKA_PREFIX}; overlay ${STATION_FRANKA_WS}"
 if [ "$HSA_ROBOT" = fer ]; then
-  echo "[station_env] HSA_TOOL=$HSA_TOOL (bare = nothing on the flange: TCP at the flange, zero payload)"
+  echo "[station_env] HSA_TOOL=$HSA_TOOL (wrist = HSA wrist, rigid = metal plate + key mount, bare = nothing on the flange)"
 fi
 echo "[station_env] HSA_DDS=$HSA_DDS RMW=$RMW_IMPLEMENTATION ROS_DOMAIN_ID=$ROS_DOMAIN_ID CYCLONEDDS_URI=${CYCLONEDDS_URI:-}"
 unset _hsa_here
