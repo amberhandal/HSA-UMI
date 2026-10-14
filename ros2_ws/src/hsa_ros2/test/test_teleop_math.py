@@ -132,3 +132,33 @@ def test_chunk_stays_inside_the_workspace_box():
     chunk = extrapolate_chunk(target, prev, 4, CHUNK_BOX)
 
     assert [round(p[0], 6) for p in chunk] == [0.69, 0.70, 0.70, 0.70]
+
+
+def test_tool_twist_translates_in_xyz_and_spins_about_the_tool_axis():
+    """tool_twist: all three translations at once, and the twist rotates about the tool's own z axis."""
+    from scipy.spatial.transform import Rotation as R
+
+    start_rot = R.from_euler('x', 90, degrees=True)  # tool z points along base -y
+    target = np.concatenate([[0.5, 0.0, 0.3], start_rot.as_rotvec()])
+    axes = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])  # tilts set too: they must be ignored
+    out = integrate_target(
+        target, axes, max_pos_speed=0.1, max_rot_speed=1.0, hz=10.0,
+        rotation_mode=False, z_enabled=True, rotation_style='tool_twist',
+    )  # fmt: skip
+    assert np.allclose(out[:3], [0.51, 0.01, 0.31])
+    rel = start_rot.inv() * R.from_rotvec(out[3:])
+    assert np.allclose(rel.as_rotvec(), [0.0, 0.0, 0.1]), 'a pure spin about the tool z axis'
+    # the tool z axis itself does not move
+    assert np.allclose(R.from_rotvec(out[3:]).apply([0, 0, 1]), start_rot.apply([0, 0, 1]))
+
+
+def test_tool_twist_sign_and_z_lock_and_button_fallback():
+    """twist_sign flips the spin; z stays locked when not enabled; the button gives base-frame rotation."""
+    target = np.zeros(6)
+    axes = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 1.0])
+    kw = dict(max_pos_speed=0.1, max_rot_speed=1.0, hz=10.0, rotation_style='tool_twist')
+    plus = integrate_target(target, axes, rotation_mode=False, z_enabled=False, **kw)
+    minus = integrate_target(target, axes, rotation_mode=False, z_enabled=False, twist_sign=-1.0, **kw)
+    assert plus[2] == 0.0 and np.allclose(plus[3:], -minus[3:])
+    held = integrate_target(target, axes, rotation_mode=True, z_enabled=True, **kw)
+    assert np.allclose(held[:3], 0.0), 'button held: translation locked, as in base mode'

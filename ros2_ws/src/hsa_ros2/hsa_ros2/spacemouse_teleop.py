@@ -225,6 +225,12 @@ class SpacemouseTeleop(Node):
         # 'spacemouse' | 'fake_sine' | 'none'
         self.declare_parameter('input_source', 'spacemouse')
         self.declare_parameter('spacemouse.deadzone', 0.0)
+        # base: buttons switch translate/rotate (rotation about base axes). tool_twist: x, y, z and a knob twist
+        # together, the twist spinning the tool about its own axis; the rotation button still gives 'base'.
+        self.declare_parameter('spacemouse.rotation_style', 'base')
+        self.declare_parameter('spacemouse.twist_sign', 1.0)
+        # false: up/down works without holding the z button.
+        self.declare_parameter('spacemouse.z_needs_button', True)
         self.declare_parameter('spacemouse.rotation_button', 0)  # held -> rotate, translation locked
         self.declare_parameter('spacemouse.z_button', 1)  # held -> vertical motion allowed
         self.declare_parameter('fake_sine.period_s', 6.0)
@@ -255,6 +261,9 @@ class SpacemouseTeleop(Node):
         self._box = {k: float(p(f'workspace.{k}')) for k in ('x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max')}
         self._rotation_button = int(p('spacemouse.rotation_button'))
         self._z_button = int(p('spacemouse.z_button'))
+        self._rotation_style = str(p('spacemouse.rotation_style'))
+        self._twist_sign = float(p('spacemouse.twist_sign'))
+        self._z_needs_button = bool(p('spacemouse.z_needs_button'))
         self._wrist_enabled = bool(p('wrist.enabled'))
         self._wrist_soft = np.asarray(p('wrist.setpoint_rad'), dtype=np.float64)
         self._wrist_stiff = np.asarray(p('wrist.stiff_setpoint_rad'), dtype=np.float64)
@@ -313,7 +322,8 @@ class SpacemouseTeleop(Node):
         )
         self.get_logger().info(
             f'spacemouse_teleop: {mode} | input={source} | {self._hz:g} Hz | '
-            f'{self._max_pos_speed} m/s, {self._max_rot_speed} rad/s | frames {self._base} -> {self._tcp}'
+            f'{self._max_pos_speed} m/s, {self._max_rot_speed} rad/s | frames {self._base} -> {self._tcp} | '
+            f'rotation {self._rotation_style}, z {"button" if self._z_needs_button else "free"}'
         )
         self.get_logger().info(
             f'keys: c start  s save  f save as failure  Backspace drop  1-{len(self._stage_names)} subtask '
@@ -434,7 +444,9 @@ class SpacemouseTeleop(Node):
         prev_target = self._target.copy()
         axes, buttons = self._input.read()
         rotation_mode = bool(buttons[self._rotation_button]) if self._rotation_button < len(buttons) else False
-        z_enabled = bool(buttons[self._z_button]) if self._z_button < len(buttons) else False
+        z_enabled = (not self._z_needs_button) or (
+            bool(buttons[self._z_button]) if self._z_button < len(buttons) else False
+        )
         self._target = clamp_workspace(
             integrate_target(
                 self._target,
@@ -444,6 +456,8 @@ class SpacemouseTeleop(Node):
                 hz=self._hz,
                 rotation_mode=rotation_mode,
                 z_enabled=z_enabled,
+                rotation_style=self._rotation_style,
+                twist_sign=self._twist_sign,
             ),
             self._box,
         )

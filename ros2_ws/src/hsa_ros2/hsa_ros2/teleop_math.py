@@ -48,22 +48,39 @@ def integrate_target(
     hz: float,
     rotation_mode: bool,
     z_enabled: bool,
+    rotation_style: str = 'base',
+    twist_sign: float = 1.0,
 ) -> np.ndarray:
     """
     Advance the commanded target pose by one control tick.
 
     The SpaceMouse is a velocity device: full deflection moves the target by ``max_speed / hz`` per tick.
-    ``rotation_mode`` (left button held) rotates the tool and locks translation; otherwise translation
-    only. ``z_enabled`` (right button held) allows vertical motion; otherwise z is locked so an accidental
-    push does not drive the tool into the table.
+    ``rotation_mode`` (left button held) rotates the tool about the base axes and locks translation.
+    ``z_enabled`` allows vertical motion; otherwise z is locked so an accidental push does not drive the
+    tool into the table.
+
+    ``rotation_style='tool_twist'``: without the button, translation and a twist of the knob act together,
+    and the twist (the puck's vertical-axis rotation, ``axes[5]``) spins the tool about its own z axis, the
+    flange axis; tilts are ignored. With the button held it behaves like ``'base'``.
 
     :param target: current ``[x, y, z, rx, ry, rz]`` target.
     :param axes: output of :func:`map_spacemouse_axes`.
+    :param twist_sign: +1 or -1, flips the direction the knob's twist spins the tool.
     :returns: the new target (a new array; the input is not modified).
     """
     target = np.asarray(target, dtype=np.float64).copy()
     dpos = axes[:3] * (max_pos_speed / hz)
     drot = axes[3:] * (max_rot_speed / hz)
+    if rotation_style == 'tool_twist' and not rotation_mode:
+        if not z_enabled:
+            dpos[2] = 0.0
+        target[:3] += dpos
+        spin = st.Rotation.from_rotvec([0.0, 0.0, twist_sign * drot[2]])
+        # Compose ON THE RIGHT: rotate about the tool's own z axis, wherever it points.
+        target[3:] = (st.Rotation.from_rotvec(target[3:]) * spin).as_rotvec()
+        return target
+    if rotation_style not in ('base', 'tool_twist'):
+        raise ValueError(f"rotation_style must be 'base' or 'tool_twist', not {rotation_style!r}")
     if rotation_mode:
         dpos[:] = 0.0
     else:
