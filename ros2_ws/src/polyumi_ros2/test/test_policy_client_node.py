@@ -1282,3 +1282,29 @@ def test_finger_output_size_is_applied_to_the_decoded_frame(make_node):
     node._finger_cb(msg)
 
     assert node._latest_finger.shape[:2] == (224, 224)
+
+
+def _wrench_msg(stamp_s: float, fx: float):
+    from geometry_msgs.msg import WrenchStamped
+
+    msg = WrenchStamped()
+    msg.header.stamp = _t(stamp_s).to_msg()
+    msg.wrench.force.x = fx
+    msg.wrench.torque.z = -fx
+    return msg
+
+
+def test_wrench_at_is_the_newest_sample_at_or_before_the_capture_instant(make_node):
+    """Same zero-order hold as the HSA recorder: never a sample from after the frame was captured."""
+    node = make_node(send_wrench=True, max_wrench_age_s=0.05)
+    for i in range(10):
+        node._wrench_cb(_wrench_msg(1.0 + i * 0.001, fx=float(i)))
+    sample = node._wrench_at(1.0045)
+    assert sample[0] == 4.0 and sample[5] == -4.0, 'the 1.004 s sample, not the later 1.005 s one'
+    assert node._wrench_at(0.999) is None, 'nothing at or before the instant'
+    assert node._wrench_at(1.2) is None, 'newest sample is 0.191 s old: past max_wrench_age_s'
+
+
+def test_send_wrench_off_by_default(make_node):
+    """A visuomotor checkpoint keeps its old request shape unless send_wrench is set."""
+    assert make_node()._send_wrench is False

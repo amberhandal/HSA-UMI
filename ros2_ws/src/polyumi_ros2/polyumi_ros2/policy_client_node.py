@@ -38,7 +38,7 @@ import numpy as np
 import rclpy
 import rclpy.time
 import tf2_ros
-from geometry_msgs.msg import Pose, PoseArray
+from geometry_msgs.msg import Pose, PoseArray, WrenchStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -246,6 +246,12 @@ class PolicyClientNode(Node):
         # Vista family, every member of which indexes obs['finger_rgb'] and obs['mic_0']
         # unconditionally — see the fork's docs/SENSOR_PROCESSING.md.
         self.declare_parameter('send_tactile', False)
+        # Force input for checkpoints trained with robot0_ext_wrench (task=polyumi_force): the Franka
+        # external wrench, sampled at each frame's capture instant exactly as the HSA recorder stores it
+        # (newest sample at or before stamp - latency.gopro).
+        self.declare_parameter('send_wrench', False)
+        self.declare_parameter('wrench_topic', '/franka_robot_state_broadcaster/external_wrench_in_base_frame')
+        self.declare_parameter('max_wrench_age_s', 0.1)
         self.declare_parameter('finger_image_topic', '/pi/camera/image/compressed')
         self.declare_parameter('audio_topic', '/pi/audio/raw')
         # Rows of `mic_0` per request — the policy's `audio_obs_horizon`. THIS MUST MATCH THE
@@ -359,6 +365,11 @@ class PolicyClientNode(Node):
 
         # --- Tactile state (only populated when send_tactile is on) ---
         self._send_tactile = self.get_parameter('send_tactile').get_parameter_value().bool_value
+        self._send_wrench = self.get_parameter('send_wrench').get_parameter_value().bool_value
+        self._max_wrench_age_s = self.get_parameter('max_wrench_age_s').get_parameter_value().double_value
+        # (stamp_s, wrench6), newest last; ~1 kHz, so sized for the same window as the pose buffer.
+        self._wrench_history: deque = deque(maxlen=max(100, int(self._ee_pose_buffer_s * 1000)))
+        self._wrench_lock = threading.Lock()
         self._n_audio_rows = self.get_parameter('n_audio_rows').get_parameter_value().integer_value
         self._max_finger_age_s = self.get_parameter('max_finger_age_s').get_parameter_value().double_value
         # -1 stands in for finger_camera.yaml's `null`, i.e. the frame's own edge.
@@ -470,6 +481,14 @@ class PolicyClientNode(Node):
             10,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
+        if self._send_wrench:
+            self.create_subscription(
+                WrenchStamped,
+                self.get_parameter('wrench_topic').get_parameter_value().string_value,
+                self._wrench_cb,
+                50,
+                callback_group=MutuallyExclusiveCallbackGroup(),
+            )
         if self._send_tactile:
             # Both on their own callback groups for the reason the gripper has one: audio arrives
             # in a steady stream that must not be serialised behind a control tick, or the ring
@@ -939,7 +958,11 @@ class PolicyClientNode(Node):
                     self._warn_throttled(f'Finger frame {age:.3f}s stale (limit {self._max_finger_age_s}s)')
                 else:
                     finger = candidate
-        self._obs_buffer.append((image, agent_pos, finger))
+        wrench = None
+        if self._send_wrench:
+            t_capture = image_stamp - Duration(seconds=self._latency['gopro'])
+            wrench = self._wrench_at(t_capture.nanoseconds * 1e-9)
+        self._obs_buffer.append((image, agent_pos, finger, wrench))
         if len(self._obs_buffer) < self._n_obs_steps:
             self._warn_throttled(f'Observation buffer filling ({len(self._obs_buffer)}/{self._n_obs_steps})')
             return
@@ -969,6 +992,15 @@ class PolicyClientNode(Node):
             'camera0_rgb': np.stack([entry[0] for entry in self._obs_buffer]),
             'agent_pos': np.stack([entry[1] for entry in self._obs_buffer]),
         }
+        if self._send_wrench:
+            wrenches = [entry[3] for entry in self._obs_buffer]
+            if any(w is None for w in wrenches):
+                self._warn_throttled(
+                    f'Skipping inference: no wrench sample within {self._max_wrench_age_s}s of a frame '
+                    '(is the franka_robot_state_broadcaster up?)'
+                )
+                return
+            channels['robot0_ext_wrench'] = np.stack(wrenches).astype(np.float32)
         if self._send_tactile:
             # Both tactile channels are all-or-nothing for a request: the Vista family indexes
             # them unconditionally, and the wire format deliberately refuses a partial frame
@@ -989,6 +1021,27 @@ class PolicyClientNode(Node):
         )
         # t_obs: the instant every channel above describes, i.e. what action[0] targets.
         self._submit_inference(obs, t_obs)
+
+    def _wrench_cb(self, msg: WrenchStamped) -> None:
+        """Buffer one external-wrench sample (force then torque) under its header stamp."""
+        w = msg.wrench
+        sample = np.array([w.force.x, w.force.y, w.force.z, w.torque.x, w.torque.y, w.torque.z])
+        with self._wrench_lock:
+            self._wrench_history.append((msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, sample))
+
+    def _wrench_at(self, t_capture_s: float) -> np.ndarray | None:
+        """
+        Newest wrench stamped at or before ``t_capture_s``, or None if none is within max_wrench_age_s.
+
+        The recorder pairs each frame with the same sample (a zero-order hold, not interpolation), so
+        training and inference see the force at the same delay relative to the image.
+        """
+        with self._wrench_lock:
+            history = list(self._wrench_history)
+        for stamp, sample in reversed(history):
+            if stamp <= t_capture_s:
+                return sample if t_capture_s - stamp <= self._max_wrench_age_s else None
+        return None
 
     def _lookup_agent_pos(self, image_stamp: rclpy.time.Time) -> np.ndarray | None:
         """
