@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# Laptop side of demo collection (camera, recorder with force, teleop, collect_ui, bag) as one tmux session.
+# Laptop side of demo collection (wrist stack, camera, recorder with force + wrist, teleop, collect_ui, bag)
+# as one tmux session.
 #
-#     ./record_session.sh                                 # into data/key_in_hole/rigid/v2, condition rigid
-#     ./record_session.sh data/key_in_hole/rigid/v3 rigid # another dataset folder / condition
-#     ./record_session.sh --kill                          # ^C every pane, then close the session
+#     ./record_session.sh                                   # into data/key_in_hole/wrist/v1, condition wrist_extended
+#     ./record_session.sh data/key_in_hole/wrist/v2 wrist_extended   # another dataset folder / condition
+#     WRIST=0 ./record_session.sh data/key_in_hole/rigid/v3 rigid    # no wrist window, no wrist streams
+#     ./record_session.sh --kill                            # ^C every pane, then close the session
 #
-# Start ./station_session.sh first. Every pane is sourced (setup_franka_env.sh). Camera and
-# collect_ui are RUN; the recorder, teleop, session bag and home are only PRE-TYPED: press Enter.
+# Start ./station_session.sh first. Every pane is sourced (setup_franka_env.sh, which overlays the wrist
+# workspace on this laptop). Camera and collect_ui are RUN; the wrist stack, the GUI, the recorder, teleop,
+# session bag and home are only PRE-TYPED: press Enter.
 #
-#   window 'record'   camera | recorder (wrench.enabled) | session bag (next bags/session_NN)
+#   window 'wrist'    can0 up + wrist launch (ODrives, state publisher, baseplate camera + tags) | joint GUI | topic check
+#   window 'record'   camera | recorder (wrench + wrist + plate + wrist camera) | session bag (next bags/session_NN)
 #   window 'operate'  teleop | collect_ui | shell
 #   window 'home'     home (Up + Enter after every demo) | saved-demo count | shell
 #   window 'post'     tap-test sync check, then end-of-session ledger / plots / zip
+#
+# Wrist order, before the first demo: Enter in the wrist pane (sudo asks for the password) -> Enter in the GUI
+# pane -> GUI: Enable -> plate flat: Set Zero Here, Set Platform Zero (camera) if the mount changed -> Extend Fully
+# (every HSA to its max_angle, 360 deg) -> the topic check shows /hsa/wrist/state and /platform_pose. The GUI's
+# banner must be green (plate mounted the expected way round). Then the record window as before.
 
 set -euo pipefail
 
@@ -31,8 +40,15 @@ if [ "${1:-}" = --kill ]; then
   exit 0
 fi
 
-DATA="${1:-data/key_in_hole/rigid/v2}"
-CONDITION="${2:-rigid}"
+WRIST="${WRIST:-1}"
+WRIST_CAM="${WRIST_CAM:-/dev/video8}"      # the Arducam OV9281 (v4l2-ctl --list-devices)
+if [ "$WRIST" = 1 ]; then
+  DATA="${1:-data/key_in_hole/wrist/v1}"
+  CONDITION="${2:-wrist_extended}"
+else
+  DATA="${1:-data/key_in_hole/rigid/v2}"
+  CONDITION="${2:-rigid}"
+fi
 DATA="${DATA%/}"
 NAME="$(echo "$DATA" | sed 's|^data/||; s|/|_|g')"   # data/key_in_hole/rigid/v2 -> key_in_hole_rigid_v2
 
@@ -56,7 +72,15 @@ ENV="export HSA_ROBOT=$ROBOT && source setup_franka_env.sh"
 TELEOP_YAML=ros2_ws/src/hsa_ros2/config/teleop.yaml
 
 CAMERA="ros2 launch hsa_ros2 camera.launch.xml"
-RECORDER="ros2 run hsa_ros2 demo_recorder --ros-args --params-file ros2_ws/src/hsa_ros2/config/recorder.yaml -p output_dir:=$REPO_DIR/$DATA -p task_name:=key_in_hole -p condition:=$CONDITION -p wrench.enabled:=true -p max_episode_s:=60.0"
+WRIST_STREAMS=""
+[ "$WRIST" = 1 ] && WRIST_STREAMS=" -p wrist.enabled:=true -p plate.enabled:=true -p wrist_camera.enabled:=true"
+RECORDER="ros2 run hsa_ros2 demo_recorder --ros-args --params-file ros2_ws/src/hsa_ros2/config/recorder.yaml -p output_dir:=$REPO_DIR/$DATA -p task_name:=key_in_hole -p condition:=$CONDITION -p wrench.enabled:=true$WRIST_STREAMS -p max_episode_s:=60.0"
+# can0 is the candleLight USB adapter; the launch is the whole wrist (odrive_can bridges, hsa_odrive_control,
+# wrist_state_publisher, baseplate camera + AprilTag + platform_pose + plate_guard). No OpenCV window: collect_ui
+# shows the plate numbers and the GUI the mount banner.
+WRIST_LAUNCH="sudo ip link set can0 up type can bitrate 500000 && sudo ip link set can0 txqueuelen 1000; ros2 launch wrist_control wrist_control.launch.py show_window:=false video_device:=$WRIST_CAM"
+WRIST_GUI="ros2 run wrist_control joint_commander_gui"
+WRIST_CHECK="ros2 topic hz /hsa/wrist/state /platform_pose /tracking_cam/image_raw"
 # Numbered when it runs, not when the session starts: Up + Enter after a ^C then opens the next session_NN
 # instead of failing on the folder the previous run left.
 BAG_CMD="n=1; while [ -e $DATA/bags/session_\$(printf %02d \$n) ]; do n=\$((n + 1)); done; ros2_ws/src/hsa_ros2/scripts/record_rollout.sh $DATA/bags/session_\$(printf %02d \$n)"
@@ -102,6 +126,7 @@ tmux set-option -t "$SESSION" mouse on
 # No clock/hostname on the right, so a narrow terminal still shows every window name.
 tmux set-option -t "$SESSION" status-right ''
 tmux set-option -g history-limit "${HISTORY_LIMIT:-50000}"
+[ "$WRIST" = 1 ] && read -r P_WRIST P_GUI P_WCHECK < <(new_window wrist)
 read -r P_CAM P_REC P_BAG < <(new_window record)
 read -r P_TELEOP P_UI P_OP_SHELL < <(new_window operate)
 read -r P_HOME P_COUNT P_HOME_SHELL < <(new_window home)
@@ -109,6 +134,11 @@ read -r P_SYNC P_POST P_SHELL < <(new_window post)
 tmux kill-window -t "$SESSION:_init"
 tmux move-window -r -t "$SESSION:"
 
+if [ "$WRIST" = 1 ]; then
+  pane "$P_WRIST" "wrist stack" "$WRIST_LAUNCH" pretype
+  pane "$P_GUI" "joint gui" "$WRIST_GUI" pretype
+  pane "$P_WCHECK" "wrist topics" "$WRIST_CHECK" pretype
+fi
 pane "$P_CAM" camera "$CAMERA" run
 pane "$P_REC" recorder "$RECORDER" pretype
 pane "$P_BAG" "session bag" "$BAG_CMD" pretype
@@ -126,12 +156,16 @@ Q_PANE+=("$P_POST"); Q_CMD+=("$POST"); Q_MODE+=(pretype)
 pane "$P_SHELL" shell "ros2 run hsa_ros2 export_dataset $DATA --episodes" pretype
 type_commands
 
-tmux select-window -t "$SESSION:record"
-tmux select-pane -t "$P_REC"
+if [ "$WRIST" = 1 ]; then
+  tmux select-window -t "$SESSION:wrist"; tmux select-pane -t "$P_WRIST"
+else
+  tmux select-window -t "$SESSION:record"; tmux select-pane -t "$P_REC"
+fi
 
 cat <<EOF
 
 Session '$SESSION' is up: $DATA (condition $CONDITION, $EXISTING demo notes already there), bag $BAG.
+$([ "$WRIST" = 1 ] && echo "  wrist:   wrist stack: Enter (sudo password) | joint gui: Enter -> Enable, Set Zero Here, Extend Fully | topics check: Enter")
   record:  camera running | recorder: Enter | session bag: Enter (optional; ^C after the last demo)
   operate: teleop: Enter once 'pgrep' above it is empty | collect_ui running | shell
   home:    home: Enter, then Up + Enter after every demo (MOVES THE ARM) | saved-demo count | shell

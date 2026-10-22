@@ -17,9 +17,20 @@
       enabled: false                    # true: videos/episode_NNNN.mp4 (+ _frames.csv) per episode, full resolution
       fps: 30.0
     stage_topic: /hsa/stage
-    servo:
-      enabled: false                    # true once the wrist bridge publishes /hsa/servo_state
-      topic: /hsa/servo_state
+    # The ODrive HSA wrist (wrist_control workspace: ros2 launch wrist_control wrist_control.launch.py).
+    # Each needs its topic live; the recorder skips frames until the wrist state / wrist camera arrive.
+    wrist:
+      enabled: false                    # true: robot0_wrist_* (extension, command, motor pos/vel, torque, Iq, bus V/I, temps, errors)
+      topic: /hsa/wrist/state           # hsa_wrist_msgs/WristState from wrist_state_publisher (source that workspace)
+    plate:
+      enabled: false                    # true: robot0_plate_pos / _rot_axis_angle / _visible (plate displacement from rest)
+      topic: /platform_pose             # camera_tracking platform_pose, in platform_zero (set_platform_zero once per mount)
+      visible_topic: /platform_tag_visible
+      max_age_s: 0.2                    # older than this (tags lost) -> plate_visible 0, the pose is held
+    wrist_camera:
+      enabled: false                    # true: camera1_rgb, the baseplate camera resized 224x224 (whole frame, no crop)
+      topic: /tracking_cam/image_raw    # or /tracking_cam/image_raw/compressed (JPEG; less DDS traffic)
+      max_age_s: 0.2                    # warn when the paired frame is older than this
     wrench:
       enabled: false                    # true on the station (needs the Franka state broadcaster)
       topic: /franka_robot_state_broadcaster/external_wrench_in_base_frame

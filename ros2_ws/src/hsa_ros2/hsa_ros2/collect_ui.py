@@ -70,7 +70,38 @@ def overlay_lines(
     if recording and status.get('t0'):
         stamp += f'   t = {t_capture_s - float(status["t0"]):.3f} s'
     name = f': {stage_names[stage]}' if 0 <= stage < len(stage_names) else ''
-    return [first, force_line, stamp, f'Stage {stage}{name}']
+    lines = [first, force_line, stamp, f'Stage {stage}{name}']
+    wrist = wrist_line(status)
+    if wrist:
+        lines.append(wrist)
+    return lines
+
+
+def wrist_line(status: dict) -> str | None:
+    """One line for the wrist streams the recorder reports (its status JSON), or None when it has none."""
+    parts = []
+    if 'wrist_ext_deg' in status:
+        ext = status.get('wrist_ext_deg')
+        if ext is None:
+            parts.append('Wrist   no data')
+        else:
+            parts.append('Wrist ' + ' '.join(f'{v:.0f}' for v in ext) + ' deg')
+            iq = status.get('wrist_iq_a')
+            if iq:
+                parts.append(f'Iq {max(abs(float(v)) for v in iq):.1f} A')
+            if any(status.get('wrist_errors') or []):
+                parts.append('ERRORS')
+    if 'plate_pos_mm' in status:
+        pos = status.get('plate_pos_mm')
+        if pos is None:
+            parts.append('plate: no pose (zero it)')
+        else:
+            seen = 'seen' if status.get('plate_visible') else 'LOST'
+            parts.append(f'plate z {pos[2]:+.1f} mm tilt {float(status.get("plate_tilt_deg") or 0.0):.1f} deg {seen}')
+    if 'wrist_camera_age_ms' in status:
+        age = status.get('wrist_camera_age_ms')
+        parts.append('cam1 ' + ('no frame' if age is None else f'{age:.0f} ms'))
+    return '   '.join(parts) if parts else None
 
 
 def draw_overlay(bgr: np.ndarray, lines: list[str], recording: bool) -> np.ndarray:

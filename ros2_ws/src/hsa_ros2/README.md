@@ -52,8 +52,9 @@ it. Teleop and policy drive the arm through one identical path: the action chunk
 | `/polyumi/target_poses_preview` | `geometry_msgs/PoseArray` | teleop and `policy_client_node` → Foxglove / RViz; nothing moves |
 | `/hsa/teleop_target` | `geometry_msgs/PoseStamped` | teleop → recorder; stored as the `action` key |
 | `/hsa/stage` | `std_msgs/Int32` | teleop (Space increments it) → recorder |
-| `/hsa/target_servo` | `sensor_msgs/JointState` | teleop (`wrist.enabled: true`) → wrist command node (not written yet) |
-| `/hsa/servo_state` | `sensor_msgs/JointState` | wrist bridge (not written yet) → recorder (`servo.enabled: true`) |
+| `/hsa/wrist/state` | `hsa_wrist_msgs/WristState` | `wrist_state_publisher` (wrist_control workspace) → recorder (`wrist.enabled: true`): extension and command angles, ODrive position/velocity/torque/Iq, bus V/I, temperatures, errors, per axis |
+| `/platform_pose`, `/platform_tag_visible` | `geometry_msgs/PoseStamped`, `std_msgs/Bool` | camera_tracking `platform_pose` → recorder (`plate.enabled: true`): the top plate in its rest frame |
+| `/tracking_cam/image_raw` (or `/compressed`) | `sensor_msgs/Image` 1280×800 | baseplate camera → recorder (`wrist_camera.enabled: true`), stored as `camera1_rgb` 224×224 |
 | `/camera/color/image_raw` | `sensor_msgs/Image`, rgb8, 640×480 @ 30 Hz | `camera.launch.xml` or `fake_camera` → recorder and `policy_client_node` |
 | `/franka_robot_state_broadcaster/external_wrench_in_base_frame` | `geometry_msgs/WrenchStamped` | station → recorder (`wrench.enabled: true`) |
 | `/polyumi/diag/*` | `std_msgs/Float32` | `policy_client_node` → `diag_stats` |

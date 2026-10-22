@@ -47,3 +47,15 @@ if [ "${HSA_ROBOT:-fer}" = fer ]; then : "${HSA_DDS:=fastdds}"; fi
 if [ -f "${HOME}/ros2_overlay_ws/install/setup.bash" ] && ! ros2 pkg prefix foxglove_msgs >/dev/null 2>&1; then
   _hsa_pwd="$PWD"; cd "${HOME}/ros2_overlay_ws/install" && . ./setup.bash; cd "$_hsa_pwd"; unset _hsa_pwd
 fi
+
+# The HSA wrist stack (ODrive CAN, baseplate camera, hsa_wrist_msgs) is a separate colcon workspace on this
+# laptop. Overlay it in every terminal so `ros2 launch wrist_control ...` works and the recorder can import
+# hsa_wrist_msgs (wrist.enabled). HSA_WRIST_WS='' skips it.
+: "${HSA_WRIST_WS:=${HOME}/hsa-ws/wrist_control/odrive_ros_ws}"
+if [ -n "${HSA_WRIST_WS}" ] && [ -f "${HSA_WRIST_WS}/install/setup.bash" ]; then
+  case ":${AMENT_PREFIX_PATH:-}:" in
+    *":${HSA_WRIST_WS}/install/"*) ;;
+    *) _hsa_pwd="$PWD"; cd "${HSA_WRIST_WS}/install" && . ./setup.bash; cd "$_hsa_pwd"; unset _hsa_pwd
+       echo "[env.handell] wrist workspace: ${HSA_WRIST_WS}/install" ;;
+  esac
+fi

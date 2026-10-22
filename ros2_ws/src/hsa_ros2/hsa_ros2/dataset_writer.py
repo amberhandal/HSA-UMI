@@ -38,9 +38,28 @@ KEY_GRIPPER = 'robot0_gripper_width'  # 0.0 until a gripper exists (the sampler 
 KEY_START = 'robot0_demo_start_pose'  # the episode's first [pos, rotvec], repeated every step
 KEY_END = 'robot0_demo_end_pose'  # the episode's last [pos, rotvec], repeated every step
 KEY_ACTION = 'action'  # commanded teleop target [pos, rotvec, gripper]
-KEY_WRIST_POS = 'robot0_wrist_servo'  # servo positions (rad), when the wrist is on
-KEY_WRIST_CUR = 'robot0_wrist_current'  # servo currents (A), when the wrist is on
 KEY_WRENCH = 'robot0_ext_wrench'  # Franka external wrench, when enabled
+# The ODrive HSA wrist (wrist.enabled), one column per HSA / ODrive axis, from /hsa/wrist/state.
+KEY_WRIST_EXT = 'robot0_wrist_ext_deg'  # measured extension angle (deg, hsa_odrive_control's conversion)
+KEY_WRIST_CMD = 'robot0_wrist_cmd_deg'  # commanded extension angle (deg)
+KEY_WRIST_MOTOR_POS = 'robot0_wrist_motor_pos'  # ODrive pos_estimate (turns)
+KEY_WRIST_MOTOR_VEL = 'robot0_wrist_motor_vel'  # ODrive vel_estimate (turns/s)
+KEY_WRIST_TORQUE = 'robot0_wrist_torque'  # torque_estimate (Nm)
+KEY_WRIST_TORQUE_TARGET = 'robot0_wrist_torque_target'  # torque_target (Nm)
+KEY_WRIST_IQ = 'robot0_wrist_iq'  # iq_measured (A), the motor current
+KEY_WRIST_IQ_SETPOINT = 'robot0_wrist_iq_setpoint'  # iq_setpoint (A)
+KEY_WRIST_BUS_V = 'robot0_wrist_bus_voltage'  # DC bus voltage per ODrive (V)
+KEY_WRIST_BUS_I = 'robot0_wrist_bus_current'  # DC bus current per ODrive (A)
+KEY_WRIST_FET_TEMP = 'robot0_wrist_fet_temp'  # ODrive FET temperature (C)
+KEY_WRIST_MOTOR_TEMP = 'robot0_wrist_motor_temp'  # motor temperature (C)
+KEY_WRIST_ERRORS = 'robot0_wrist_errors'  # ODrive active_errors bitmask
+KEY_WRIST_AXIS_STATE = 'robot0_wrist_axis_state'  # ODrive axis state (8 = closed loop)
+# The top plate seen by the baseplate camera (plate.enabled): /platform_pose, the plate in its rest
+# frame platform_zero (camera_tracking), so it is the plate's displacement from rest.
+KEY_PLATE_POS = 'robot0_plate_pos'  # m
+KEY_PLATE_ROT = 'robot0_plate_rot_axis_angle'  # rotation vector (rad)
+KEY_PLATE_VISIBLE = 'robot0_plate_visible'  # 1 when the pose is fresh (tags seen), else the pose is held
+KEY_WRIST_IMAGE = 'camera1_rgb'  # the baseplate camera frame, resized (wrist_camera.enabled)
 KEY_STAGE = 'stage'  # subtask index (stage_names), set by the teleop keys 1..N / Space
 KEY_TIME = 'timestamp'  # capture instant, wall-clock seconds
 
@@ -58,10 +77,69 @@ REQUIRED_KEYS = {
 }
 #: Keys that are present only when the corresponding stream is enabled.
 OPTIONAL_KEYS = {
-    KEY_WRIST_POS: ((6,), np.float32),
-    KEY_WRIST_CUR: ((6,), np.float32),
     KEY_WRENCH: ((6,), np.float32),
+    **{
+        k: ((6,), np.float32)
+        for k in (
+            KEY_WRIST_EXT, KEY_WRIST_CMD, KEY_WRIST_MOTOR_POS, KEY_WRIST_MOTOR_VEL, KEY_WRIST_TORQUE,
+            KEY_WRIST_TORQUE_TARGET, KEY_WRIST_IQ, KEY_WRIST_IQ_SETPOINT, KEY_WRIST_BUS_V, KEY_WRIST_BUS_I,
+            KEY_WRIST_FET_TEMP, KEY_WRIST_MOTOR_TEMP,
+        )
+    },  # fmt: skip
+    KEY_WRIST_ERRORS: ((6,), np.int64),
+    KEY_WRIST_AXIS_STATE: ((6,), np.int64),
+    KEY_PLATE_POS: ((3,), np.float32),
+    KEY_PLATE_ROT: ((3,), np.float32),
+    KEY_PLATE_VISIBLE: ((1,), np.int64),
+    KEY_WRIST_IMAGE: ((IMAGE_SIZE, IMAGE_SIZE, 3), np.uint8),
 }
+#: The WristState message field behind each wrist key (all per-axis float arrays except the two ints).
+WRIST_STATE_FIELDS = {
+    KEY_WRIST_EXT: 'extension_deg',
+    KEY_WRIST_CMD: 'command_deg',
+    KEY_WRIST_MOTOR_POS: 'motor_pos_turns',
+    KEY_WRIST_MOTOR_VEL: 'motor_vel_turns_s',
+    KEY_WRIST_TORQUE: 'torque_estimate_nm',
+    KEY_WRIST_TORQUE_TARGET: 'torque_target_nm',
+    KEY_WRIST_IQ: 'iq_measured_a',
+    KEY_WRIST_IQ_SETPOINT: 'iq_setpoint_a',
+    KEY_WRIST_BUS_V: 'bus_voltage_v',
+    KEY_WRIST_BUS_I: 'bus_current_a',
+    KEY_WRIST_FET_TEMP: 'fet_temperature_c',
+    KEY_WRIST_MOTOR_TEMP: 'motor_temperature_c',
+    KEY_WRIST_ERRORS: 'controller_errors',
+    KEY_WRIST_AXIS_STATE: 'axis_state',
+}
+
+
+def wrist_state_arrays(msg, n_axes: int = 6) -> dict[str, np.ndarray]:
+    """
+    Pull the per-axis columns out of a ``hsa_wrist_msgs/WristState`` (or any object with its fields).
+
+    Each array is padded with NaN (ints with 0) to ``n_axes`` so a short message cannot shift columns.
+    """
+    out = {}
+    for key, field in WRIST_STATE_FIELDS.items():
+        shape, dtype = OPTIONAL_KEYS[key]
+        vals = list(getattr(msg, field))[: shape[0]]
+        fill = 0 if np.issubdtype(dtype, np.integer) else np.nan
+        out[key] = np.array(vals + [fill] * (shape[0] - len(vals)), dtype=np.float64)
+    return out
+
+
+def resize_wrist_rgb(img: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
+    """
+    Resize a baseplate-camera frame to the policy grid, keeping the whole frame.
+
+    No 4:3 crop (unlike ``resize_camera0_rgb``): the tag ring touches the frame's long edges, and a
+    crop would lose tags. The aspect ratio changes (1280x800 -> 224x224); a policy learns on it the
+    same way. INTER_AREA, as for camera0. Any client that feeds ``camera1_rgb`` must call this.
+    """
+    import cv2
+
+    if img.shape[0] == size and img.shape[1] == size:
+        return np.ascontiguousarray(img)
+    return np.ascontiguousarray(cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA))
 
 
 # ----------------------------------------------------------------------------------------------

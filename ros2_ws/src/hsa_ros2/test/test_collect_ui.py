@@ -34,3 +34,25 @@ def test_draw_overlay_keeps_shape_and_marks_recording():
     assert out.shape == img.shape and img.max() == 0
     assert out[30, 610, 2] == 255 and out[30, 610, 0] == 0
     assert collect_ui.draw_overlay(img, ['a'], recording=False)[30, 610].max() == 0
+
+
+def test_wrist_line_from_recorder_status():
+    """The fifth line appears only when the recorder reports wrist streams, and says what is missing."""
+    assert collect_ui.wrist_line({}) is None
+    assert len(collect_ui.overlay_lines({}, None, None, 1.0, 0)) == 4
+    status = {
+        'wrist_ext_deg': [360.0, 359.6, 360.2, 358.9, 360.0, 361.0],
+        'wrist_iq_a': [1.9, -2.1, 1.8, 2.0, 1.7, 1.9],
+        'wrist_errors': [0] * 6,
+        'plate_pos_mm': [0.1, -0.2, 12.3],
+        'plate_tilt_deg': 1.4,
+        'plate_visible': True,
+        'wrist_camera_age_ms': 8.0,
+    }
+    line = collect_ui.wrist_line(status)
+    assert line.startswith('Wrist 360 360 360 359 360 361 deg   Iq 2.1 A')
+    assert 'plate z +12.3 mm tilt 1.4 deg seen' in line and line.endswith('cam1 8 ms')
+    assert len(collect_ui.overlay_lines(status, None, None, 1.0, 0)) == 5
+    lost = collect_ui.wrist_line({'wrist_ext_deg': None, 'plate_pos_mm': None, 'wrist_camera_age_ms': None})
+    assert lost == 'Wrist   no data   plate: no pose (zero it)   cam1 no frame'
+    assert 'ERRORS' in collect_ui.wrist_line({'wrist_ext_deg': [0] * 6, 'wrist_errors': [0, 8, 0, 0, 0, 0]})

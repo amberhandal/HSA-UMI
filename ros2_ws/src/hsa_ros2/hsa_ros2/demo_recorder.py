@@ -2,8 +2,11 @@
 Record teleoperated demonstrations into a UMI ReplayBuffer, one stored step per camera frame.
 
 The camera frame is the clock: the TF pose, the teleop target (the ``action``), the stage and the
-optional wrist servo and wrench streams are all sampled at the frame's capture instant
-(``stamp - latency.camera``), the pairing ``policy_client_node`` uses at inference. The
+optional wrench, wrist state, plate pose and wrist camera streams are all sampled at the frame's
+capture instant (``stamp - latency.camera``), the pairing ``policy_client_node`` uses at inference.
+The wrist streams (``wrist``, ``plate``, ``wrist_camera``) come from the wrist_control workspace
+(``ros2 launch wrist_control wrist_control.launch.py``); ``wrist.enabled`` needs its
+``hsa_wrist_msgs`` package sourced, which is why the import is inside the branch. The
 ``/hsa_recorder/*`` Trigger services are the ones ``spacemouse_teleop`` calls.
 
     ros2 run hsa_ros2 demo_recorder --ros-args -p output_dir:=~/hsa_data/peg_v1 --params-file .../recorder.yaml
@@ -30,8 +33,9 @@ from geometry_msgs.msg import PoseStamped, WrenchStamped
 from trajectory_msgs.msg import MultiDOFJointTrajectory
 from rclpy.duration import Duration
 from rclpy.node import Node
-from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import Int32, String
+from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool, Int32, String
 from std_srvs.srv import Trigger
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException  # type: ignore[attr-defined]
 
@@ -115,8 +119,21 @@ class DemoRecorder(Node):
         self.declare_parameter('video.fps', 30.0)
         self.declare_parameter('stage_topic', '/hsa/stage')
         self.declare_parameter('stage_names', list(dw.DEFAULT_STAGE_NAMES))
-        self.declare_parameter('servo.enabled', False)
-        self.declare_parameter('servo.topic', '/hsa/servo_state')
+        # The ODrive HSA wrist: hsa_wrist_msgs/WristState from wrist_state_publisher (sourced from the
+        # wrist_control workspace), the newest message at or before each frame's capture instant.
+        self.declare_parameter('wrist.enabled', False)
+        self.declare_parameter('wrist.topic', '/hsa/wrist/state')
+        # The top plate from the baseplate camera (camera_tracking platform_pose): the pose in its rest
+        # frame, held when the tags are not seen; plate_visible says whether the stored pose is fresh.
+        self.declare_parameter('plate.enabled', False)
+        self.declare_parameter('plate.topic', '/platform_pose')
+        self.declare_parameter('plate.visible_topic', '/platform_tag_visible')
+        self.declare_parameter('plate.max_age_s', 0.2)
+        # The baseplate camera frame itself, resized to the policy grid as camera1_rgb. The raw topic
+        # or its /compressed republication (less DDS traffic, a JPEG decode per stored frame).
+        self.declare_parameter('wrist_camera.enabled', False)
+        self.declare_parameter('wrist_camera.topic', '/tracking_cam/image_raw')
+        self.declare_parameter('wrist_camera.max_age_s', 0.2)
         self.declare_parameter('wrench.enabled', False)
         self.declare_parameter('wrench.topic', '/franka_robot_state_broadcaster/external_wrench_in_base_frame')
         # A target older than this at a frame's instant means the teleop node is not running or
@@ -146,7 +163,11 @@ class DemoRecorder(Node):
         self._lat_cam = float(p('latency.camera'))
         self._lat_proprio = float(p('latency.proprio'))
         self._every_n = max(1, int(p('store_every_n_frames')))
-        self._servo_on = bool(p('servo.enabled'))
+        self._wrist_on = bool(p('wrist.enabled'))
+        self._plate_on = bool(p('plate.enabled'))
+        self._plate_max_age = float(p('plate.max_age_s'))
+        self._wcam_on = bool(p('wrist_camera.enabled'))
+        self._wcam_max_age = float(p('wrist_camera.max_age_s'))
         self._wrench_on = bool(p('wrench.enabled'))
         self._max_target_age = float(p('max_target_age_s'))
         self._min_steps = int(p('min_steps'))
@@ -170,6 +191,10 @@ class DemoRecorder(Node):
                 # Note: no gripper yet, just a placeholder.
                 'gripper_closed_width_m': 0.0,
                 'task_name': str(p('task_name')),
+                'wrist_state_topic': str(p('wrist.topic')) if self._wrist_on else '',
+                'plate_pose_topic': str(p('plate.topic')) if self._plate_on else '',
+                'wrist_camera_topic': str(p('wrist_camera.topic')) if self._wcam_on else '',
+                'camera1_resize': 'resize_wrist_rgb: whole frame to 224x224, INTER_AREA' if self._wcam_on else '',
             },
         )
 
@@ -181,6 +206,11 @@ class DemoRecorder(Node):
         self._wrench_ages: list[float] = []
         self._wrench_missing = 0
         self._last_wrench_age: float | None = None
+        # Per-episode pairing ages of the wrist streams, for the sidecar; the last one for the status.
+        self._ages: dict[str, list[float]] = {'wrist': [], 'plate': [], 'wrist_camera': []}
+        self._missing: dict[str, int] = {'wrist': 0, 'plate': 0, 'wrist_camera': 0}
+        self._last_age: dict[str, float | None] = {'wrist': None, 'plate': None, 'wrist_camera': None}
+        self._plate_visible_steps = 0
         self._frame_count = 0
         self._tf_fail = 0
         self._stale_target = 0
@@ -189,8 +219,12 @@ class DemoRecorder(Node):
         # (stamp, sample) rings, newest last, for time alignment at the frame instant.
         maxlen = int(buffer_s * 200)
         self._targets: deque = deque(maxlen=maxlen)  # (receive_time, pose6)
-        self._servo: deque = deque(maxlen=maxlen)  # (stamp, pos6, cur6)
         self._wrench: deque = deque(maxlen=maxlen)  # (stamp, wrench6)
+        self._wrist: deque = deque(maxlen=maxlen)  # (stamp, {key: (6,) array})
+        self._plate: deque = deque(maxlen=maxlen)  # (stamp, pose6)
+        self._plate_visible = False
+        # Raw baseplate frames are 3 MB each, so only a short window of them is kept.
+        self._wcam: deque = deque(maxlen=max(4, int(buffer_s * 15)))  # (stamp, rgb HxWx3)
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=buffer_s))
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -210,8 +244,24 @@ class DemoRecorder(Node):
             EpisodeVideo(self._output_dir / 'videos', float(p('video.fps'))) if bool(p('video.enabled')) else None
         )
         self.create_subscription(Int32, str(p('stage_topic')), self._stage_cb, 10)
-        if self._servo_on:
-            self.create_subscription(JointState, str(p('servo.topic')), self._servo_cb, 20)
+        if self._wrist_on:
+            try:
+                from hsa_wrist_msgs.msg import WristState
+            except ImportError as e:
+                raise RuntimeError(
+                    'wrist.enabled needs hsa_wrist_msgs: source the wrist_control workspace '
+                    '(~/hsa-ws/wrist_control/odrive_ros_ws/install/setup.bash) in this terminal'
+                ) from e
+            self.create_subscription(WristState, str(p('wrist.topic')), self._wrist_cb, 20)
+        if self._plate_on:
+            self.create_subscription(PoseStamped, str(p('plate.topic')), self._plate_cb, 20)
+            self.create_subscription(Bool, str(p('plate.visible_topic')), self._plate_visible_cb, 20)
+        if self._wcam_on:
+            topic = str(p('wrist_camera.topic'))
+            if topic.endswith('/compressed'):
+                self.create_subscription(CompressedImage, topic, self._wcam_compressed_cb, 1)
+            else:
+                self.create_subscription(Image, topic, self._wcam_cb, 1)
         if self._wrench_on:
             self.create_subscription(WrenchStamped, str(p('wrench.topic')), self._wrench_cb, 20)
 
@@ -234,7 +284,8 @@ class DemoRecorder(Node):
         self.get_logger().info(
             f'hsa_recorder: {self._writer.summary().splitlines()[0]} | image {p("image_topic")} every '
             f'{self._every_n} frame(s) | TF {self._base} -> {self._tcp} @ stamp - {self._lat_cam}s | '
-            f'servo={"on" if self._servo_on else "off"} wrench={"on" if self._wrench_on else "off"} | '
+            f'wrench={"on" if self._wrench_on else "off"} wrist={"on" if self._wrist_on else "off"} '
+            f'plate={"on" if self._plate_on else "off"} wrist_camera={"on" if self._wcam_on else "off"} | '
             f'{self._plan.describe()}'
         )
 
@@ -279,14 +330,42 @@ class DemoRecorder(Node):
     def _stage_cb(self, msg: Int32) -> None:
         self._latest_stage = int(msg.data)
 
-    def _servo_cb(self, msg: JointState) -> None:
-        pos = np.asarray(msg.position, dtype=np.float64)
-        cur = (
-            np.asarray(msg.effort, dtype=np.float64)
-            if len(msg.effort) == len(msg.position)
-            else np.full(len(pos), np.nan)
+    def _wrist_cb(self, msg) -> None:
+        self._wrist.append((_stamp_s(msg.header.stamp), dw.wrist_state_arrays(msg)))
+
+    def _plate_cb(self, msg: PoseStamped) -> None:
+        q = msg.pose.orientation
+        pose6 = np.concatenate(
+            [
+                [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z],
+                st.Rotation.from_quat([q.x, q.y, q.z, q.w]).as_rotvec(),
+            ]
         )
-        self._servo.append((_stamp_s(msg.header.stamp), pos, cur))
+        self._plate.append((_stamp_s(msg.header.stamp), pose6))
+
+    def _plate_visible_cb(self, msg: Bool) -> None:
+        self._plate_visible = bool(msg.data)
+
+    def _wcam_cb(self, msg: Image) -> None:
+        if msg.encoding not in ('rgb8', 'bgr8', 'mono8'):
+            self.get_logger().error(f'wrist camera: unsupported encoding {msg.encoding!r}', throttle_duration_sec=5.0)
+            return
+        if msg.encoding == 'mono8':
+            img = np.repeat(np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 1), 3, axis=2)
+        else:
+            img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+            if msg.encoding == 'bgr8':
+                img = img[:, :, ::-1]
+        self._wcam.append((_stamp_s(msg.header.stamp), img))
+
+    def _wcam_compressed_cb(self, msg: CompressedImage) -> None:
+        import cv2
+
+        bgr = cv2.imdecode(np.frombuffer(msg.data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            self.get_logger().error('wrist camera: could not decode a compressed frame', throttle_duration_sec=5.0)
+            return
+        self._wcam.append((_stamp_s(msg.header.stamp), bgr[:, :, ::-1]))
 
     def _wrench_cb(self, msg: WrenchStamped) -> None:
         w = msg.wrench
@@ -367,14 +446,33 @@ class DemoRecorder(Node):
             dw.KEY_STAGE: np.array([self._latest_stage]),
             dw.KEY_TIME: np.array(t_s),
         }
-        if self._servo_on:
-            servo = list(self._servo)
-            if not servo:
-                self.get_logger().warning('frame skipped, no wrist servo state yet', throttle_duration_sec=2.0)
+        if self._wrist_on:
+            sample, age = self._held('wrist', self._wrist, t_s)
+            if sample is None:
+                # Publisher not up yet: the episode would lack the wrist columns entirely, so skip.
+                self.get_logger().warning('frame skipped, no wrist state yet (wrist_state_publisher?)', throttle_duration_sec=2.0)
                 return None
-            times = [s[0] for s in servo]
-            step[dw.KEY_WRIST_POS] = dw.interp_at(times, [s[1] for s in servo], t_s)
-            step[dw.KEY_WRIST_CUR] = dw.interp_at(times, [s[2] for s in servo], t_s)
+            step.update(sample)
+        if self._plate_on:
+            pose6, age = self._held('plate', self._plate, t_s)
+            fresh = pose6 is not None and age <= self._plate_max_age and self._plate_visible
+            if pose6 is None:
+                pose6 = np.full(6, np.nan)
+                self.get_logger().warning(
+                    'no plate pose yet: zero the platform (set_platform_zero) with the tags in view', throttle_duration_sec=5.0
+                )
+            step[dw.KEY_PLATE_POS] = pose6[:3]
+            step[dw.KEY_PLATE_ROT] = pose6[3:]
+            step[dw.KEY_PLATE_VISIBLE] = np.array([1 if fresh else 0])
+            self._plate_visible_steps += int(fresh)
+        if self._wcam_on:
+            frame, age = self._held('wrist_camera', self._wcam, t_s)
+            if frame is None:
+                self.get_logger().warning('frame skipped, no wrist camera frame yet', throttle_duration_sec=2.0)
+                return None
+            if age > self._wcam_max_age:
+                self.get_logger().warning(f'wrist camera frame is {age:.2f}s old at this step', throttle_duration_sec=2.0)
+            step[dw.KEY_WRIST_IMAGE] = dw.resize_wrist_rgb(frame)
         if self._wrench_on:
             wr = list(self._wrench)
             times = np.array([w[0] for w in wr], dtype=np.float64)
@@ -387,6 +485,19 @@ class DemoRecorder(Node):
                 self._last_wrench_age = t_s - float(times[i])
                 self._wrench_ages.append(self._last_wrench_age)
         return step
+
+    def _held(self, name: str, ring: deque, t_s: float):
+        """Newest sample of ``ring`` stamped at or before ``t_s`` (zero-order hold) and its age; counted."""
+        items = list(ring)
+        times = np.array([x[0] for x in items], dtype=np.float64)
+        i = int(np.searchsorted(times, t_s, side='right')) - 1 if items else -1
+        if i < 0:
+            self._missing[name] += 1
+            return None, None
+        age = t_s - float(times[i])
+        self._last_age[name] = age
+        self._ages[name].append(age)
+        return items[i][1], age
 
     # ------------------------------------------------------------------------------------------
     # Services
@@ -413,6 +524,9 @@ class DemoRecorder(Node):
             self._episode_t0 = time.time()
             self._tf_fail = self._stale_target = self._wrench_missing = 0
             self._wrench_ages = []
+            self._ages = {k: [] for k in self._ages}
+            self._missing = dict.fromkeys(self._missing, 0)
+            self._plate_visible_steps = 0
         resp.success = True
         resp.message = f'recording episode {self._writer.n_episodes}: {self._plan.describe()}' + (
             f' | condition: {self._condition()}' if self._condition() else ''
@@ -471,6 +585,19 @@ class DemoRecorder(Node):
                 'stage_names': list(self.get_parameter('stage_names').value),
                 'stages': self._stage_table(arrays),
                 'wrench_sample_age_s': self._wrench_age_stats(),
+                'wrist_sample_age_s': self._age_stats('wrist') if self._wrist_on else None,
+                'plate_sample_age_s': self._age_stats('plate') if self._plate_on else None,
+                'plate_visible_fraction': (self._plate_visible_steps / len(steps)) if self._plate_on else None,
+                'wrist_camera_age_s': self._age_stats('wrist_camera') if self._wcam_on else None,
+                'wrist_extension_deg_median': (
+                    np.nanmedian(arrays[dw.KEY_WRIST_EXT], axis=0).round(1).tolist() if self._wrist_on else None
+                ),
+                'wrist_command_deg_median': (
+                    np.nanmedian(arrays[dw.KEY_WRIST_CMD], axis=0).round(1).tolist() if self._wrist_on else None
+                ),
+                'wrist_iq_a_median': (
+                    np.nanmedian(arrays[dw.KEY_WRIST_IQ], axis=0).round(2).tolist() if self._wrist_on else None
+                ),
                 'keys': sorted(arrays),
             },
         )
@@ -577,6 +704,35 @@ class DemoRecorder(Node):
             'missing_steps': int(self._wrench_missing),
         }
 
+    def _age_stats(self, name: str) -> dict:
+        """Age of the sample paired with each step for one wrist stream (sidecar)."""
+        ages = np.array(self._ages[name], dtype=np.float64)
+        return {
+            'median': float(np.median(ages)) if ages.size else None,
+            'max': float(ages.max()) if ages.size else None,
+            'missing_steps': int(self._missing[name]),
+        }
+
+    def _wrist_status(self) -> dict:
+        """Live wrist / plate / wrist-camera fields for collect_ui: the newest samples, not paired ones."""
+        out: dict = {}
+        ms = lambda a: None if a is None else a * 1e3  # noqa: E731
+        if self._wrist_on:
+            latest = self._wrist[-1] if self._wrist else None
+            out['wrist_ext_deg'] = None if latest is None else [round(float(v), 1) for v in latest[1][dw.KEY_WRIST_EXT]]
+            out['wrist_iq_a'] = None if latest is None else [round(float(v), 2) for v in latest[1][dw.KEY_WRIST_IQ]]
+            out['wrist_errors'] = None if latest is None else [int(v) for v in latest[1][dw.KEY_WRIST_ERRORS]]
+            out['wrist_age_ms'] = ms(self._last_age['wrist'])
+        if self._plate_on:
+            latest = self._plate[-1] if self._plate else None
+            out['plate_pos_mm'] = None if latest is None else [round(float(v) * 1e3, 2) for v in latest[1][:3]]
+            out['plate_tilt_deg'] = None if latest is None else round(float(np.degrees(np.linalg.norm(latest[1][3:]))), 2)
+            out['plate_visible'] = bool(self._plate_visible)
+            out['plate_age_ms'] = ms(self._last_age['plate'])
+        if self._wcam_on:
+            out['wrist_camera_age_ms'] = ms(self._last_age['wrist_camera'])
+        return out
+
     def _publish_status(self) -> None:
         """Publish the recorder state as JSON for collect_ui (10 Hz)."""
         with self._lock:
@@ -596,6 +752,7 @@ class DemoRecorder(Node):
                         'wrench_age_ms': None if self._last_wrench_age is None else self._last_wrench_age * 1e3,
                         'condition': self._condition(),
                         'plan': self._plan.describe(),
+                        **self._wrist_status(),
                     }
                 )
             )
@@ -608,7 +765,8 @@ class DemoRecorder(Node):
         self.get_logger().info(
             f'{"REC " + str(n) + " steps" if rec else "idle"} | store {self._writer.n_episodes} ep / '
             f'{self._writer.n_steps} steps | last frame {"none" if age is None else f"{age:.2f}s ago"} | '
-            f'targets {len(self._targets)} servo {len(self._servo)} wrench {len(self._wrench)}'
+            f'targets {len(self._targets)} wrench {len(self._wrench)} wrist {len(self._wrist)} '
+            f'plate {len(self._plate)}{" (visible)" if self._plate_visible else ""} wrist_cam {len(self._wcam)}'
         )
 
 

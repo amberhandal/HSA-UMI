@@ -24,8 +24,13 @@ def _steps(n, t0=0.0, x0=0.5, with_optional=False):
             dw.KEY_TIME: np.array(t0 + i / 30.0),
         }
         if with_optional:
-            s[dw.KEY_WRIST_POS] = np.zeros(6)
-            s[dw.KEY_WRIST_CUR] = np.zeros(6)
+            s[dw.KEY_WRIST_EXT] = np.full(6, 360.0)
+            s[dw.KEY_WRIST_IQ] = np.full(6, 2.0)
+            s[dw.KEY_WRIST_ERRORS] = np.zeros(6, dtype=np.int64)
+            s[dw.KEY_PLATE_POS] = np.array([0.0, 0.0, 0.012])
+            s[dw.KEY_PLATE_ROT] = np.zeros(3)
+            s[dw.KEY_PLATE_VISIBLE] = np.ones(1, dtype=np.int64)
+            s[dw.KEY_WRIST_IMAGE] = np.full((dw.IMAGE_SIZE, dw.IMAGE_SIZE, 3), 7, dtype=np.uint8)
         steps.append(s)
     return steps
 
@@ -165,3 +170,58 @@ def test_ledger_csv_has_one_row_per_episode_with_subtask_times(tmp_path):
     assert [r['outcome'] for r in rows] == ['success', 'failure']
     assert rows[1]['stopped_by'] == 'timeout' and rows[0]['insert_s'] == '0.3' and rows[0]['turn_s'] == '0.0'
 
+
+class _FakeWristState:
+    extension_deg = [360.0] * 6
+    command_deg = [360.0] * 6
+    motor_pos_turns = [1.0, 2.0]  # short on purpose
+    motor_vel_turns_s = [0.0] * 6
+    torque_estimate_nm = [0.1] * 6
+    torque_target_nm = [0.0] * 6
+    iq_setpoint_a = [0.0] * 6
+    iq_measured_a = [2.0] * 6
+    bus_voltage_v = [24.0] * 6
+    bus_current_a = [0.5] * 6
+    fet_temperature_c = [30.0] * 6
+    motor_temperature_c = [35.0] * 6
+    controller_errors = [0, 0, 0, 4, 0, 0]
+    axis_state = [8] * 7  # long on purpose
+
+
+def test_wrist_state_arrays_cover_every_wrist_key_with_six_columns():
+    """Every wrist key gets a (6,) column from its message field, padded or trimmed."""
+    arrays = dw.wrist_state_arrays(_FakeWristState())
+    assert set(arrays) == set(dw.WRIST_STATE_FIELDS)
+    assert all(a.shape == (6,) for a in arrays.values())
+    assert arrays[dw.KEY_WRIST_EXT][0] == 360.0 and arrays[dw.KEY_WRIST_IQ][5] == 2.0
+    assert arrays[dw.KEY_WRIST_MOTOR_POS][1] == 2.0 and np.isnan(arrays[dw.KEY_WRIST_MOTOR_POS][2])
+    assert arrays[dw.KEY_WRIST_ERRORS][3] == 4 and arrays[dw.KEY_WRIST_AXIS_STATE].tolist() == [8] * 6
+    # and they assemble into an episode with the declared dtypes
+    steps = _steps(3)
+    for s in steps:
+        s.update(arrays)
+    out = dw.assemble_episode(steps)
+    assert out[dw.KEY_WRIST_ERRORS].dtype == np.int64 and out[dw.KEY_WRIST_IQ].dtype == np.float32
+
+
+def test_wrist_and_plate_keys_round_trip_through_the_store(tmp_path):
+    """The wrist, plate and second-camera keys are written, re-read and exported with the rest."""
+    pytest.importorskip('cv2')
+    w = dw.ReplayBufferWriter(tmp_path / 'd')
+    w.add_episode(dw.assemble_episode(_steps(4, with_optional=True)))
+    assert dw.KEY_WRIST_IMAGE in w.keys() and w.data[dw.KEY_WRIST_IMAGE].shape == (4, 224, 224, 3)
+    assert w.data[dw.KEY_PLATE_POS][:, 2].tolist() == pytest.approx([0.012] * 4)
+    assert w.data[dw.KEY_PLATE_VISIBLE].dtype == np.int64
+    assert w.data[dw.KEY_WRIST_EXT][0].tolist() == [360.0] * 6
+
+
+def test_resize_wrist_rgb_keeps_the_whole_frame():
+    """A 1280x800 frame becomes 224x224 without a crop: both edges survive."""
+    cv2 = pytest.importorskip('cv2')
+    img = np.zeros((800, 1280, 3), dtype=np.uint8)
+    img[:, :40] = 255  # a bar at the left edge, which a 4:3 crop would remove
+    img[:, -40:] = 255
+    out = dw.resize_wrist_rgb(img)
+    assert out.shape == (224, 224, 3) and out.flags['C_CONTIGUOUS']
+    assert out[100, 0, 0] > 200 and out[100, -1, 0] > 200 and out[100, 112, 0] == 0
+    del cv2
