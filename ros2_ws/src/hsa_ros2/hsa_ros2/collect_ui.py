@@ -54,7 +54,9 @@ def overlay_lines(
     recording = bool(status.get('recording'))
     first = f'Demo {episode if episode is not None else "?"}'
     if recording:
-        first += f'   REC {float(status.get("elapsed_s", 0.0)):.1f} s   {int(status.get("steps", 0))} steps'
+        limit = float(status.get('max_episode_s') or 0.0)
+        of = f' / {limit:.0f}' if limit > 0 else ''
+        first += f'   REC {float(status.get("elapsed_s", 0.0)):.1f}{of} s   {int(status.get("steps", 0))} steps'
     else:
         first += '   idle'
     if force is None:
@@ -102,6 +104,10 @@ class CollectUI(Node):
         self.declare_parameter('status_topic', '/hsa_recorder/status')
         self.declare_parameter('stage_topic', '/hsa/stage')
         self.declare_parameter('stage_names', list(DEFAULT_STAGE_NAMES))
+        # Keys 1..N set the subtask and c resets it to the first. publish_stage:=true (rollouts, no teleop) publishes
+        # the stage itself; otherwise teleop owns the stage and the keys go to it as requests.
+        self.declare_parameter('publish_stage', False)
+        self.declare_parameter('stage_request_topic', '/hsa/stage_request')
         self.declare_parameter('recorder_service_prefix', '/hsa_recorder')
         self.declare_parameter('latency.camera', 0.0)  # same value as the recorder's
         self.declare_parameter('buffer_seconds', 2.0)
@@ -119,6 +125,9 @@ class CollectUI(Node):
         self.create_subscription(WrenchStamped, str(p('wrench.topic')), self._wrench_cb, 20)
         self.create_subscription(String, str(p('status_topic')), self._status_cb, 10)
         self.create_subscription(Int32, str(p('stage_topic')), self._stage_cb, 10)
+        self._stage_pub = self.create_publisher(
+            Int32, str(p('stage_topic' if bool(p('publish_stage')) else 'stage_request_topic')), 10
+        )
         prefix = str(p('recorder_service_prefix'))
         self._recorder_clients = {name: self.create_client(Trigger, f'{prefix}/{name}') for name in RECORDER_SERVICES}
         cv2.namedWindow(self._window, cv2.WINDOW_AUTOSIZE)
@@ -168,7 +177,10 @@ class CollectUI(Node):
             if rclpy.ok():
                 rclpy.shutdown()
         elif key == ord('c'):
+            self._set_stage(0)
             self._call('start_episode')
+        elif ord('1') <= key <= ord('9') and key - ord('1') < len(self.get_parameter('stage_names').value):
+            self._set_stage(key - ord('1'))
         elif key == ord('s'):
             self._call('stop_episode')
         elif key == ord('f'):
@@ -181,6 +193,12 @@ class CollectUI(Node):
             else:
                 self._last_backspace = now
                 self.get_logger().info('backspace again within 2 s to drop the episode')
+
+    def _set_stage(self, stage: int) -> None:
+        """Publish the subtask, or request it from the teleop (see publish_stage)."""
+        self._stage_pub.publish(Int32(data=int(stage)))
+        names = self.get_parameter('stage_names').value
+        self.get_logger().info(f'stage -> {stage} ({names[stage] if stage < len(names) else "?"})')
 
     def _call(self, name: str) -> None:
         client = self._recorder_clients[name]

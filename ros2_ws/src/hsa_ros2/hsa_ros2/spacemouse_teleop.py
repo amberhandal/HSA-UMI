@@ -26,9 +26,12 @@ import numpy as np
 import rclpy
 import rclpy.time
 import tf2_ros
+from controller_manager_msgs.msg import ControllerManagerActivity
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from lifecycle_msgs.msg import State
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
@@ -247,10 +250,17 @@ class SpacemouseTeleop(Node):
         self.declare_parameter('recorder_service_prefix', '/hsa_recorder')
         self.declare_parameter('teleop_target_topic', '/hsa/teleop_target')
         self.declare_parameter('stage_topic', '/hsa/stage')
+        # Stage keys pressed in collect_ui's window arrive here; this node stays the only stage publisher.
+        self.declare_parameter('stage_request_topic', '/hsa/stage_request')
         # Subtask names by stage index; keys 1..N select them, c resets to the first.
         self.declare_parameter('stage_names', list(DEFAULT_STAGE_NAMES))
         self.declare_parameter('wrist_target_topic', '/hsa/target_servo')
         self.declare_parameter('preview_topic', '/polyumi/target_poses_preview')
+        # The controller that executes the chunks, and the controller manager's (latched) state-change topic.
+        # A home switches it off; the subscriber count on the chunk topic alone can miss that, and a target
+        # left where the operator was is then followed again the moment the home hands the arm back.
+        self.declare_parameter('servo_controller', 'polyumi_cartesian_impedance_controller')
+        self.declare_parameter('controller_activity_topic', '/controller_manager/activity')
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731 - short accessor
         self._hz = float(p('control_hz'))
@@ -284,8 +294,11 @@ class SpacemouseTeleop(Node):
         else:
             raise ValueError(f"input_source must be spacemouse | fake_sine | none, got '{source}'")
         self._keys = KeyReader(self.get_logger())
-        # True while executing with no subscriber on the chunk topic (see _tick).
+        # True while executing with no subscriber on the chunk topic, or the servo controller not active (see _tick).
         self._holding = False
+        # Last reported state of servo_controller: None until the controller manager has said anything.
+        self._servo_active: bool | None = None
+        self._servo_controller = str(p('servo_controller'))
 
         # --- TF: where is the TCP right now? ----------------------------------------------
         # Only the latest base->tcp transform is needed: it seeds the target where the arm actually is.
@@ -306,6 +319,14 @@ class SpacemouseTeleop(Node):
         )
         self._stage = 0
         self._stage_names = [str(n) for n in p('stage_names')]
+        self.create_subscription(Int32, str(p('stage_request_topic')), self._stage_request_cb, 10)
+        if self._execute:
+            latched = QoSProfile(
+                depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL
+            )
+            self.create_subscription(
+                ControllerManagerActivity, str(p('controller_activity_topic')), self._activity_cb, latched
+            )
 
         # --- Service clients on the recorder ----------------------------------------------
         # Calls are asynchronous (call_async + done callback) so the control loop never blocks on the recorder.
@@ -383,6 +404,20 @@ class SpacemouseTeleop(Node):
                 self.get_logger().error(f'{name}: {resp.message}')
 
         future.add_done_callback(done)
+
+    def _activity_cb(self, msg: ControllerManagerActivity) -> None:
+        """Track whether servo_controller is active; a controller missing from the list is not."""
+        states = {c.name: c.state.id for c in msg.controllers}
+        active = states.get(self._servo_controller) == State.PRIMARY_STATE_ACTIVE
+        if active != self._servo_active:
+            self.get_logger().info(f'{self._servo_controller}: {"active" if active else "not active"}')
+        self._servo_active = active
+
+    def _stage_request_cb(self, msg: Int32) -> None:
+        """Apply a stage key pressed in collect_ui, as if it had been pressed here."""
+        if self._stage != int(msg.data):
+            self._stage = int(msg.data)
+            self.get_logger().info(f'stage -> {self._stage_label()} (from collect_ui)')
 
     def _stage_label(self) -> str:
         """Return 'index (name)' for the current stage, or just the index past the named ones."""
@@ -485,13 +520,18 @@ class SpacemouseTeleop(Node):
         chunk = [self._pose_msg(p6) for p6 in chunk6]
         pose = chunk[0]
         if self._chunk_pub is not None:
-            if self._chunk_pub.get_subscription_count() == 0:
+            if self._chunk_pub.get_subscription_count() == 0 or self._servo_active is False:
                 # Hold: with nobody executing the chunks the target would drift from the arm and the arm
                 # would jump when the controller activates. Re-seeding every tick keeps the target on the arm.
                 if not self._holding:
+                    why = (
+                        f'{self._servo_controller} is not active (a home, or a controller switch)'
+                        if self._servo_active is False
+                        else f'nothing is subscribed to {self._chunk_pub.topic_name}'
+                    )
                     self.get_logger().warning(
-                        f'nothing is subscribed to {self._chunk_pub.topic_name}: holding the target at the '
-                        f"arm's pose, puck input ignored until the controller subscribes. Needs {CONSUMER_HINT}"
+                        f"{why}: holding the target at the arm's pose, puck input ignored until the controller "
+                        f'subscribes. Needs {CONSUMER_HINT}'
                     )
                     self._holding = True
                 self._target = None
