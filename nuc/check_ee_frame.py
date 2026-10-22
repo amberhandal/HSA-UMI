@@ -4,10 +4,12 @@ Check that the published ``fer_hand_tcp`` is the end effector the robot has conf
 
 The streaming controller converts O_T_EE onto ``hsa_tcp`` through ``fer_hand_tcp``, a static transform
 this repo publishes that must equal the F_T_EE set in Desk; nothing else notices when it does not
-(nuc/hsa_calib.py, "Where fer_hand_tcp comes from"). One-shot: read
-``/franka_robot_state_broadcaster/robot_state`` once, compare ``f_t_ee`` with hsa_calib's transform, exit 0
-on a match and 1 on a mismatch (bringup.launch.py aborts on 1). A message with no usable ``f_t_ee`` is
-logged as "cannot verify" and exits 0. Self-contained, so it runs from a plain clone on the station:
+(nuc/hsa_calib.py, "Where fer_hand_tcp comes from"). The same Desk setting carries an end-effector MASS
+that the FCI adds to the SetLoad payload, so a mass entered in Desk that the calib module does not expect
+is compensated twice and shows up only as a phantom external force. One-shot: read
+``/franka_robot_state_broadcaster/robot_state`` once, compare ``f_t_ee`` with hsa_calib's transform and
+``inertia_ee.m`` with its DESK_EE_MASS, exit 0 on a match and 1 on a mismatch (bringup.launch.py aborts
+on 1). A message with no usable ``f_t_ee`` is logged as "cannot verify" and exits 0. Self-contained, so it runs from a plain clone on the station:
 
     python3 nuc/check_ee_frame.py [timeout_s] [--calib hsa_calib] [--desk-end-effector none|hand]
 """
@@ -67,12 +69,25 @@ def compare(position, quaternion, expected_xyz, expected_rpy) -> tuple[bool, str
     return dpos <= POSITION_TOL_M and angle <= ANGLE_TOL_RAD, detail
 
 
+def compare_mass(m_ee, expected: float, tol: float) -> tuple[bool, str]:
+    """
+    Compare the robot's end-effector mass with the one the Desk setting should carry.
+
+    ``m_ee`` None means the message had no inertia_ee: nothing to check, so it passes with a note.
+    """
+    if m_ee is None:
+        return True, 'robot reports no inertia_ee; end-effector mass not verified'
+    detail = f'robot m_ee = {m_ee:.3f} kg, Desk setting expects {expected:.2f} kg'
+    return abs(m_ee - expected) <= tol, detail
+
+
 def read_f_t_ee(node: Node, timeout_s: float):
     """
-    Return ``(position, quaternion)`` from the first robot_state message, or a string saying why not.
+    Return ``(position, quaternion, m_ee)`` from the first robot_state message, or a string saying why not.
 
-    The string outcomes are "timeout" (nothing published -- is the broadcaster spawned?) and
-    "unavailable" (the message has no populated f_t_ee), which the caller reports differently.
+    ``m_ee`` is ``inertia_ee.inertia.m`` or None when the message has no such field. The string outcomes
+    are "timeout" (nothing published -- is the broadcaster spawned?) and "unavailable" (the message has no
+    populated f_t_ee), which the caller reports differently.
     """
     got = threading.Event()
     box = {}
@@ -85,7 +100,11 @@ def read_f_t_ee(node: Node, timeout_s: float):
             if math.sqrt(sum(v * v for v in q)) < 0.5:
                 box['why'] = 'unavailable'
             else:
-                box['pose'] = ((pose.position.x, pose.position.y, pose.position.z), q)
+                try:
+                    m_ee = float(msg.inertia_ee.inertia.m)
+                except AttributeError:
+                    m_ee = None
+                box['pose'] = ((pose.position.x, pose.position.y, pose.position.z), q, m_ee)
         except AttributeError:
             box['why'] = 'unavailable'
         got.set()
@@ -131,15 +150,27 @@ def main(argv=None) -> int:
                 f'that Desk is set to {setting!r}. Check it by hand in Desk before execute_arm:=true.'
             )
             return 0
-        position, quaternion = outcome
+        position, quaternion, m_ee = outcome
         ok, detail = compare(position, quaternion, expected_xyz, expected_rpy)
+        if not ok:
+            others = sorted(k for k in calib.DESK_EE_TRANSFORMS if k != setting)
+            node.get_logger().error(
+                f'[check_ee_frame] MISMATCH: {detail}. The robot is not configured with the end effector '
+                f'{setting!r}. Relaunch with desk_end_effector:={"|".join(others)}, or change it in Desk.'
+            )
+            return 1
+        node.get_logger().info(f'[check_ee_frame] match: {detail}')
+        expected_mass = calib.DESK_EE_MASS[setting]
+        ok, detail = compare_mass(m_ee, expected_mass, calib.DESK_EE_MASS_TOL)
         if ok:
-            node.get_logger().info(f'[check_ee_frame] match: {detail}')
+            node.get_logger().info(f'[check_ee_frame] {detail}')
             return 0
-        others = sorted(k for k in calib.DESK_EE_TRANSFORMS if k != setting)
         node.get_logger().error(
-            f'[check_ee_frame] MISMATCH: {detail}. The robot is not configured with the end effector '
-            f'{setting!r}. Relaunch with desk_end_effector:={"|".join(others)}, or change it in Desk.'
+            f'[check_ee_frame] MASS MISMATCH: {detail}. The FCI adds Desk\'s end-effector mass to the SetLoad '
+            f'payload ({calib.PAYLOAD_MASS:.3f} kg), so the extra {m_ee - expected_mass:+.3f} kg would be '
+            f'compensated twice and read as a {abs(m_ee - expected_mass) * 9.81:.1f} N phantom force. In Desk, '
+            f'set the end effector\'s mass to {expected_mass:.2f} kg (the whole tool is in nuc/{args.calib}.py), '
+            'then restart bringup.'
         )
         return 1
     finally:

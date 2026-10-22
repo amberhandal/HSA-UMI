@@ -88,3 +88,24 @@ def test_unknown_desk_setting_fails_before_touching_ros():
     """A typo on the launch line must surface as the ValueError hsa_calib raises, not as a mismatch."""
     with pytest.raises(ValueError):
         check_ee_frame.main(['0.3', '--calib', 'hsa_calib', '--desk-end-effector', 'gripper'])
+
+
+def test_desk_mass_must_match_the_setting():
+    """A mass entered in Desk on top of the SetLoad payload is compensated twice; the gate must refuse it."""
+    ok, detail = check_ee_frame.compare_mass(1.081, hsa_calib.DESK_EE_MASS['none'], hsa_calib.DESK_EE_MASS_TOL)
+
+    assert not ok
+    assert '1.081 kg' in detail and 'expects 0.00 kg' in detail
+
+
+def test_desk_mass_within_tolerance_passes_and_missing_field_is_not_a_failure():
+    """Float noise around the expected mass passes; an old franka_ros2 without inertia_ee cannot fail the gate."""
+    assert check_ee_frame.compare_mass(0.01, 0.0, hsa_calib.DESK_EE_MASS_TOL)[0]
+    assert check_ee_frame.compare_mass(0.72, hsa_calib.DESK_EE_MASS['hand'], hsa_calib.DESK_EE_MASS_TOL)[0]
+    ok, detail = check_ee_frame.compare_mass(None, 0.0, hsa_calib.DESK_EE_MASS_TOL)
+    assert ok and 'not verified' in detail
+
+
+def test_every_desk_setting_has_a_mass():
+    """The transform table and the mass table are read by the same setting name; keep them in step."""
+    assert set(hsa_calib.DESK_EE_MASS) == set(hsa_calib.DESK_EE_TRANSFORMS)

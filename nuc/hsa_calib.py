@@ -28,16 +28,19 @@ TCP_CHILD = 'hsa_tcp'
 EE_FRAME = f'{ARM_ID}_hand_tcp'
 
 #: 'measured YYYY-MM-DD' once the ESTIMATE values below have been replaced. Logged at bringup.
-CALIBRATION_STATUS = (
-    'bare flange (HSA_TOOL=bare): TCP at the flange, no payload'
-    if TOOL == 'bare'
-    else 'ESTIMATE (unmeasured placeholders -- see nuc/hsa_calib.py)'
-)
+CALIBRATION_STATUS = {
+    'bare': 'bare flange (HSA_TOOL=bare): TCP at the flange, no payload',
+    'wrist': 'TCP z measured 2026-10-22 (key tip at 360 deg); payload CoM and extents ESTIMATE (nuc/hsa_calib.py)',
+    'rigid': 'ESTIMATE (unmeasured placeholders -- see nuc/hsa_calib.py)',
+}[TOOL]
 
 # --------------------------------------------------------------------------------------------
 # The TCP: the moving plate's tool surface, centred, at the neutral servo setpoint. ESTIMATE. Along
 # the flange axis only: the base plate bolts to the flange's bolt circle, so x and y are 0 by symmetry.
-WRIST_TCP_Z = 0.150  # m, flange face -> wrist plate tool surface at neutral servos. ESTIMATE.
+# Flange face -> key tip along the flange axis, with every HSA at 360 deg (the demo pose; rest is ~12 mm shorter,
+# camera_tracking.md). Measured 2026-10-22 with a rule, +/- 2 mm. Re-measure if the key, its mount or the
+# extension angle changes.
+WRIST_TCP_Z = 0.236
 RIGID_TCP_Z = 0.150  # m, flange face -> key mount TCP. ESTIMATE: placeholder, measure and replace.
 PLATE_HEIGHT_Z = {'wrist': WRIST_TCP_Z, 'rigid': RIGID_TCP_Z, 'bare': 0.0}[TOOL]
 
@@ -63,6 +66,12 @@ DESK_EE_TRANSFORMS = {
     'none': ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
     'hand': ((0.0, 0.0, 0.1034), (0.0, 0.0, -math.pi / 4)),
 }
+# The end-effector mass Desk carries for each setting (robot_state inertia_ee.m). The FCI adds it to the SetLoad
+# mass, so any Desk mass that is not in this table is compensated twice: with 1.08 kg entered in Desk and the
+# full 1.018 kg wrist in SetLoad the arm reported a steady 9 N phantom force at rest. check_ee_frame.py refuses
+# bringup when the robot's m_ee differs from this by more than DESK_EE_MASS_TOL.
+DESK_EE_MASS = {'none': 0.0, 'hand': 0.73}
+DESK_EE_MASS_TOL = 0.05  # kg
 
 # --------------------------------------------------------------------------------------------
 # The payload -- everything past the flange, for libfranka's gravity compensation. Unmodelled mass is
@@ -92,10 +101,13 @@ class PayloadPart(NamedTuple):
 BASE_PLATE_THICKNESS = 0.008  # m
 BASE_PLATE = PayloadPart('base plate', 3.0 * OZ, BASE_PLATE_THICKNESS / 2, (0.12, 0.12, BASE_PLATE_THICKNESS))
 
-#: The HSA wrist on top of the base plate, up to the moving plate. Its CoM is taken at mid-height. ESTIMATE.
+#: The ODrive HSA wrist with the key mount and key, weighed as one piece 2026-10-21: 933 g, without the base
+#: plate (weighed separately, BASE_PLATE above). Its CoM is taken at mid-height, a uniform box from the base plate up
+#: to the moving plate. ESTIMATE for the height and the CoM; the motors sit low on the base, so the true CoM is
+#: probably below mid-height.
 _WRIST_HEIGHT = PLATE_HEIGHT_Z - BASE_PLATE_THICKNESS
 HSA_WRIST = PayloadPart(
-    'HSA wrist', 12.9 * OZ, BASE_PLATE_THICKNESS + _WRIST_HEIGHT / 2, (0.12, 0.12, max(_WRIST_HEIGHT, 0.01))
+    'HSA wrist + key', 0.933, BASE_PLATE_THICKNESS + _WRIST_HEIGHT / 2, (0.12, 0.12, max(_WRIST_HEIGHT, 0.01))
 )
 
 #: Rigid setup: a metal base plate (always on for demos) and the rigid key attachment, weighed 2026-10-13.

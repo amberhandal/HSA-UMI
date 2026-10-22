@@ -3,7 +3,8 @@
 #
 #     ./station_session.sh                  # deploy, then create (or re-attach to) tmux session 'station'
 #     SKIP_DEPLOY=1 ./station_session.sh    # ...without re-syncing and rebuilding on the station first
-#     HSA_TOOL=wrist ./station_session.sh   # another payload (default rigid = 0.179 kg)
+#     HSA_TOOL=rigid ./station_session.sh   # another payload (default wrist = the HSA wrist with the key, 0.933 kg)
+#     HOME_POSE=key_in_hole_rigid ./station_session.sh   # another taught home pose (default key_in_hole_<tool>)
 #     ./station_session.sh --kill           # ^C every pane, then close the session
 #
 # Every pane is `ssh -t station` with station_env.sh sourced. Bringup is RUN (moves nothing);
@@ -15,8 +16,10 @@ set -euo pipefail
 
 SESSION="${SESSION:-station}"
 ROBOT="${HSA_ROBOT:-fer}"
-TOOL="${HSA_TOOL:-rigid}"
-HOME_POSE="${HOME_POSE:-key_in_hole_rigid}"
+TOOL="${HSA_TOOL:-wrist}"
+# One taught pose per tool: the wrist's TCP is longer than the rigid mount's, so the rigid pose does not fit.
+# Teach it once: hand-guide, then `ros2 service call /polyumi/set_home std_srvs/srv/Trigger "{}"` (record_session's home pane).
+HOME_POSE="${HOME_POSE:-key_in_hole_$TOOL}"
 STATION_SSH_HOST="${STATION_SSH_HOST:-station}"
 STATION_REPO="${STATION_REPO:-~/HSA-UMI}"
 SHELL_SETTLE_S="${SHELL_SETTLE_S:-5}"

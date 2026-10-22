@@ -101,12 +101,12 @@ def test_bare_flange_preset_puts_the_tcp_on_the_flange_with_no_payload(monkeypat
         importlib.reload(hsa_calib)
 
 
-def test_payload_is_the_sum_of_the_weighed_parts():
-    """Base plate 3 oz + HSA wrist 12.9 oz, nothing else counted twice or left out."""
-    assert [p.name for p in hsa_calib.PAYLOAD_PARTS] == ['base plate', 'HSA wrist']
+def test_payload_is_the_base_plate_plus_the_weighed_wrist_with_key():
+    """Base plate 3 oz + the ODrive wrist with the key weighed as one piece (933 g), nothing counted twice."""
+    assert [p.name for p in hsa_calib.PAYLOAD_PARTS] == ['base plate', 'HSA wrist + key']
     assert hsa_calib.BASE_PLATE.mass == pytest.approx(0.08505, abs=1e-5)
-    assert hsa_calib.HSA_WRIST.mass == pytest.approx(0.36571, abs=1e-5)
-    assert hsa_calib.PAYLOAD_MASS == pytest.approx(15.9 * 0.028349523125)
+    assert hsa_calib.HSA_WRIST.mass == pytest.approx(0.933)
+    assert hsa_calib.PAYLOAD_MASS == pytest.approx(0.933 + 3.0 * 0.028349523125)
 
 
 def test_combined_com_lies_between_the_parts():
