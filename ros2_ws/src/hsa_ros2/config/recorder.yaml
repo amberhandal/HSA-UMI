@@ -11,6 +11,11 @@
     store_every_n_frames: 1             # 1 -> store at the camera rate (30 Hz => obs_down_sample_steps: 3)
     stage_names: [insert, turn, open]   # subtasks by stage index; teleop keys 1-3 select them
     teleop_target_topic: /hsa/teleop_target
+    action_source: teleop               # teleop (demos) | policy (rollouts: action = the policy's command chunks)
+    policy_target_topic: /polyumi/target_poses_traj
+    video:
+      enabled: false                    # true: videos/episode_NNNN.mp4 (+ _frames.csv) per episode, full resolution
+      fps: 30.0
     stage_topic: /hsa/stage
     servo:
       enabled: false                    # true once the wrist bridge publishes /hsa/servo_state
@@ -21,6 +26,7 @@
     max_target_age_s: 0.5
     buffers:
       seconds: 2.0
+    max_episode_s: 30.0                 # demos still recording after this are saved as failures (0 = no limit)
     min_steps: 46                       # warn on shorter episodes (UMI's sampler draws nothing from them)
     task_name: ''
     plan: ''                            # CSV, any columns, one row per episode (grid cells, wrist, stiffness, ...);

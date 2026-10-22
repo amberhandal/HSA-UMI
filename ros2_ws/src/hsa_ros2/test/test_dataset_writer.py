@@ -143,3 +143,25 @@ def test_export_one_subtask_recomputes_the_start_pose(tmp_path):
         assert root['meta'].attrs['source_segments'] == [[0, 10, 22], [1, 10, 22]]
     with pytest.raises(ValueError):
         w.export_zip(tmp_path / 'none.zarr.zip', stage=5)
+
+
+
+def test_ledger_csv_has_one_row_per_episode_with_subtask_times(tmp_path):
+    """export_dataset --csv: outcome, stopped_by and per-subtask seconds per episode."""
+    import csv
+
+    from hsa_ros2 import export_dataset
+
+    w = dw.ReplayBufferWriter(tmp_path / 'ds')
+    for i, (outcome, by) in enumerate([('success', 'operator'), ('failure', 'timeout')]):
+        idx = w.add_episode(dw.assemble_episode(_steps(10, t0=10.0 * i)))
+        w.write_sidecar(idx, {'episode': idx, 'outcome': outcome, 'stopped_by': by, 'n_steps': 10, 'duration_s': 0.3,
+                              'stage_names': ['insert', 'turn', 'open'],
+                              'stages': [{'stage': 0, 'name': 'insert', 'start_step': 0, 'end_step': 10,
+                                          'duration_s': 0.3}]})  # fmt: skip
+    out = tmp_path / 'ledger.csv'
+    assert export_dataset.main([str(tmp_path / 'ds'), '--csv', str(out)]) == 0
+    rows = list(csv.DictReader(open(out)))
+    assert [r['outcome'] for r in rows] == ['success', 'failure']
+    assert rows[1]['stopped_by'] == 'timeout' and rows[0]['insert_s'] == '0.3' and rows[0]['turn_s'] == '0.0'
+

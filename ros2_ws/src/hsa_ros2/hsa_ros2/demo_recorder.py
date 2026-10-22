@@ -27,6 +27,7 @@ import rclpy.time
 import scipy.spatial.transform as st
 import tf2_ros
 from geometry_msgs.msg import PoseStamped, WrenchStamped
+from trajectory_msgs.msg import MultiDOFJointTrajectory
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
@@ -38,6 +39,7 @@ from tf2_ros import ConnectivityException, ExtrapolationException, LookupExcepti
 from polyumi_ros2.camera_preproc import resize_camera0_rgb
 
 from hsa_ros2 import dataset_writer as dw
+from hsa_ros2.episode_video import EpisodeVideo, delete_episode_video
 
 
 def _stamp_s(stamp) -> float:
@@ -104,6 +106,13 @@ class DemoRecorder(Node):
         # the task config). 3 stores at 10 Hz -> obs_down_sample_steps: 1.
         self.declare_parameter('store_every_n_frames', 1)
         self.declare_parameter('teleop_target_topic', '/hsa/teleop_target')
+        # Where the stored `action` comes from: teleop (demos) or policy (rollouts: the command chunks the
+        # policy client sends the controller, each waypoint keyed on the time it is due).
+        self.declare_parameter('action_source', 'teleop')
+        self.declare_parameter('policy_target_topic', '/polyumi/target_poses_traj')
+        # A full-resolution mp4 per episode in <output_dir>/videos (every camera frame, with its stamp).
+        self.declare_parameter('video.enabled', False)
+        self.declare_parameter('video.fps', 30.0)
         self.declare_parameter('stage_topic', '/hsa/stage')
         self.declare_parameter('stage_names', list(dw.DEFAULT_STAGE_NAMES))
         self.declare_parameter('servo.enabled', False)
@@ -116,6 +125,8 @@ class DemoRecorder(Node):
         self.declare_parameter('buffers.seconds', 2.0)
         # UMI's sampler draws zero samples from an episode shorter than (16-1)*down_sample+1 steps.
         self.declare_parameter('min_steps', 46)
+        # A demo still recording after this many seconds is saved as a failure (stopped_by: timeout). 0 = no limit.
+        self.declare_parameter('max_episode_s', 0.0)
         # Provenance written to the per-episode sidecar JSON.
         self.declare_parameter('task_name', '')
         # Per-episode labels, both written to the sidecar: `plan` is a CSV with any columns, one row per
@@ -139,6 +150,7 @@ class DemoRecorder(Node):
         self._wrench_on = bool(p('wrench.enabled'))
         self._max_target_age = float(p('max_target_age_s'))
         self._min_steps = int(p('min_steps'))
+        self._max_episode_s = float(p('max_episode_s'))
         buffer_s = float(p('buffers.seconds'))
         self._plan = EpisodePlan(str(p('plan')))
         self._advance_on_save = bool(p('advance_plan_on_save'))
@@ -185,7 +197,18 @@ class DemoRecorder(Node):
 
         # --- Subscriptions -------------------------------------------------------------------
         self.create_subscription(Image, str(p('image_topic')), self._image_cb, 1)
-        self.create_subscription(PoseStamped, str(p('teleop_target_topic')), self._target_cb, 10)
+        self._action_source = str(p('action_source'))
+        if self._action_source == 'policy':
+            self.create_subscription(
+                MultiDOFJointTrajectory, str(p('policy_target_topic')), self._policy_chunk_cb, 10
+            )
+        elif self._action_source == 'teleop':
+            self.create_subscription(PoseStamped, str(p('teleop_target_topic')), self._target_cb, 10)
+        else:
+            raise ValueError(f"action_source must be 'teleop' or 'policy', not {self._action_source!r}")
+        self._video = (
+            EpisodeVideo(self._output_dir / 'videos', float(p('video.fps'))) if bool(p('video.enabled')) else None
+        )
         self.create_subscription(Int32, str(p('stage_topic')), self._stage_cb, 10)
         if self._servo_on:
             self.create_subscription(JointState, str(p('servo.topic')), self._servo_cb, 20)
@@ -207,6 +230,7 @@ class DemoRecorder(Node):
         self.create_timer(5.0, self._status)
         self._status_pub = self.create_publisher(String, '/hsa_recorder/status', 10)
         self.create_timer(0.1, self._publish_status)
+        self.create_timer(0.1, self._check_timeout)
         self.get_logger().info(
             f'hsa_recorder: {self._writer.summary().splitlines()[0]} | image {p("image_topic")} every '
             f'{self._every_n} frame(s) | TF {self._base} -> {self._tcp} @ stamp - {self._lat_cam}s | '
@@ -230,6 +254,27 @@ class DemoRecorder(Node):
         # it is due (one tick ahead), while "the command in force at t" is the newest one that had
         # been issued by t.
         self._targets.append((self.get_clock().now().nanoseconds * 1e-9, pose6))
+
+    def _policy_chunk_cb(self, msg: MultiDOFJointTrajectory) -> None:
+        """Store a policy chunk's waypoints by due time, replacing the not-yet-due rest of the previous one."""
+        t0 = _stamp_s(msg.header.stamp)
+        new = []
+        for pt in msg.points:
+            if not pt.transforms:
+                continue
+            tf = pt.transforms[0]
+            q = tf.rotation
+            pose6 = np.concatenate(
+                [[tf.translation.x, tf.translation.y, tf.translation.z],
+                 st.Rotation.from_quat([q.x, q.y, q.z, q.w]).as_rotvec()]
+            )  # fmt: skip
+            new.append((t0 + pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9, pose6))
+        if not new:
+            return
+        # The controller splices a new chunk in at its first waypoint, so keep the times sorted.
+        while self._targets and self._targets[-1][0] >= new[0][0]:
+            self._targets.pop()
+        self._targets.extend(new)
 
     def _stage_cb(self, msg: Int32) -> None:
         self._latest_stage = int(msg.data)
@@ -257,6 +302,9 @@ class DemoRecorder(Node):
         self._frame_count += 1
         with self._lock:
             recording = self._recording
+        if recording and self._video is not None:
+            frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+            self._video.write(frame[:, :, ::-1] if msg.encoding.lower() == 'bgr8' else frame, _stamp_s(msg.header.stamp))
         if not recording or (self._frame_count % self._every_n):
             return
         step = self._sample_step(msg)
@@ -299,7 +347,9 @@ class DemoRecorder(Node):
         targets = list(self._targets)
         target = dw.latest_before([t for t, _ in targets], [v for _, v in targets], t_s) if targets else None
         if target is None:
-            self.get_logger().warning('frame skipped, no teleop target received yet', throttle_duration_sec=2.0)
+            self.get_logger().warning(
+                f'frame skipped, no {self._action_source} target received yet', throttle_duration_sec=2.0
+            )
             return None
         if targets and t_s - targets[-1][0] > self._max_target_age:
             self._stale_target += 1
@@ -355,6 +405,8 @@ class DemoRecorder(Node):
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
             resp.success, resp.message = False, f'TF {self._base} -> {self._tcp} unavailable: {e}'
             return resp
+        if self._video is not None:
+            self._video.discard()  # a partial file left by an interrupted episode
         with self._lock:
             self._steps = []
             self._recording = True
@@ -375,7 +427,7 @@ class DemoRecorder(Node):
         """Save the episode labelled a failure: kept for analysis, left out of the training export."""
         return self._stop(resp, 'failure')
 
-    def _stop(self, resp, outcome: str):
+    def _stop(self, resp, outcome: str, stopped_by: str = 'operator'):
         with self._lock:
             if not self._recording:
                 resp.success, resp.message = False, 'not recording'
@@ -384,17 +436,23 @@ class DemoRecorder(Node):
             steps, t0 = self._steps, self._episode_t0
             self._steps = []
         if not steps:
+            if self._video is not None:
+                self._video.discard()
             resp.success, resp.message = False, 'episode had no stored steps; nothing saved'
             self.get_logger().error(resp.message)
             return resp
         arrays = dw.assemble_episode(steps)
         idx = self._writer.add_episode(arrays)
+        video = self._video.finish(f'episode_{idx:04d}') if self._video is not None else None
         duration = float(arrays[dw.KEY_TIME][-1] - arrays[dw.KEY_TIME][0])
         self._writer.write_sidecar(
             idx,
             {
                 'episode': idx,
                 'outcome': outcome,
+                'stopped_by': stopped_by,
+                'action_source': self._action_source,
+                'video': str(video) if video else None,
                 'n_steps': len(steps),
                 'duration_s': duration,
                 'started_at': t0,
@@ -422,17 +480,31 @@ class DemoRecorder(Node):
             else f' (SHORT: under {self._min_steps} steps, the sampler will draw nothing from it)'
         )
         resp.success = True
-        resp.message = f'saved episode {idx} ({outcome.upper()}): {len(steps)} steps, {duration:.1f}s, {self._tf_fail} TF drops{short}'
+        how = ' after the time limit' if stopped_by == 'timeout' else ''
+        resp.message = f'saved episode {idx} ({outcome.upper()}{how}): {len(steps)} steps, {duration:.1f}s, {self._tf_fail} TF drops{short}'
         if self._advance_on_save:
             resp.message += f' | next: {self._plan.advance()}'
         self.get_logger().info(resp.message)
         return resp
+
+    def _check_timeout(self) -> None:
+        """Save a demo that has run past max_episode_s as a failure, as if f had been pressed."""
+        if self._max_episode_s <= 0:
+            return
+        with self._lock:
+            t0 = self._episode_t0 if self._recording else None
+        if t0 is None or time.time() - t0 < self._max_episode_s:
+            return
+        self.get_logger().warning(f'demo reached the {self._max_episode_s:g} s limit: saving it as a FAILURE')
+        self._stop(Trigger.Response(), 'failure', stopped_by='timeout')
 
     def _srv_drop(self, req, resp):
         with self._lock:
             if self._recording:
                 n = len(self._steps)
                 self._recording, self._steps = False, []
+                if self._video is not None:
+                    self._video.discard()
                 resp.success, resp.message = True, f'discarded the episode in progress ({n} steps)'
                 self.get_logger().warning(resp.message)
                 return resp
@@ -440,6 +512,8 @@ class DemoRecorder(Node):
         if idx is None:
             resp.success, resp.message = False, 'nothing to drop: not recording and the store is empty'
         else:
+            if self._video is not None:
+                delete_episode_video(self._video.dir, f'episode_{idx:04d}')
             resp.success, resp.message = True, f'dropped saved episode {idx} (store now has {self._writer.n_episodes})'
             self.get_logger().warning(resp.message)
         return resp
@@ -514,6 +588,7 @@ class DemoRecorder(Node):
                         'episode': self._writer.n_episodes,
                         'recording': rec,
                         'elapsed_s': (time.time() - t0) if (rec and t0) else 0.0,
+                        'max_episode_s': self._max_episode_s,
                         't0': t0 if rec else None,
                         'steps': n,
                         'store_episodes': self._writer.n_episodes,
