@@ -58,7 +58,7 @@ it. Teleop and policy drive the arm through one identical path: the action chunk
 | `/franka_robot_state_broadcaster/external_wrench_in_base_frame` | `geometry_msgs/WrenchStamped` | station → recorder (`wrench.enabled: true`) |
 | `/polyumi/diag/*` | `std_msgs/Float32` | `policy_client_node` → `diag_stats` |
 | `/hsa_recorder/{start_episode,stop_episode,drop_episode,next,export_zip}` | `std_srvs/Trigger` | teleop keys `c` / `s` / Backspace / `n` (or `ros2 service call`) → recorder |
-| TF `fer_link0 → hsa_tcp` | | arm bringup (`nuc/launch/fer_bringup.launch.py`; a static transform in desk tests) → teleop (seeds the target) and recorder (the eef pose) |
+| TF `fer_link0 → hsa_tcp` | | arm bringup (`nuc/launch/bringup.launch.py`; a static transform in desk tests) → teleop (seeds the target) and recorder (the eef pose) |
 
 `hsa_tcp` is the HSA wrist plate at the neutral servo setpoint, a static child of the flange
 (`fer_link8`) and the frame the streaming controller commands. Every node takes the frame name as a
@@ -148,11 +148,21 @@ Useful while anything runs: `ros2 topic list`, `ros2 topic echo /hsa/teleop_targ
 
 ### Teleop on the arm
 
-The station runs `nuc/launch/fer_bringup.launch.py` (franka_bringup with `arm_id:=fer`, the wrist
-payload, `fer_arm_controller`, the static `hsa_tcp` transform) and `nuc/launch/fer_inference.launch.py`
-(the home service and the streaming controller, `execute_arm:=true` to let it drive).
-`./hsa_session.sh` syncs `nuc/` to the station, builds the controller there and opens every pane;
-`docs/hsa-arm-inference.md` is the full procedure.
+The station runs `nuc/launch/bringup.launch.py robot:=fer` (franka_bringup with `arm_id:=fer`, the
+wrist payload, `fer_arm_controller`, the static `hsa_tcp` transform) and
+`nuc/launch/inference.launch.py robot:=fer` (the home service and the streaming controller,
+`execute_arm:=true` to let it drive). `./hsa_session.sh` syncs `nuc/` to the station, builds the
+controller there and opens every pane; `docs/hsa-arm-inference.md` is the full procedure.
+
+### Which robot
+
+Every launch file here takes `robot:=fer|fr3` (default `$HSA_ROBOT`, else `fer`), which loads
+`config/robots/<robot>.yaml`: the base and TCP frames, the only thing the nodes need to know about
+the arm. With `ros2 run`, add that file after the node's own:
+
+    ros2 run hsa_ros2 demo_recorder --ros-args --params-file config/recorder.yaml --params-file config/robots/fr3.yaml
+
+`docs/hsa-arm-inference.md` ("Running on the CRB FR3 instead") covers the arm side.
 
 1. Bringup on the station, then the inference launch with `execute_arm:=true`;
    `ros2 control list_controllers` there must show `polyumi_cartesian_impedance_controller active`.
@@ -205,6 +215,20 @@ Per-episode labels, both written to the sidecar and never interpreted by the rec
 `ros2 run hsa_ros2 export_dataset <dir> --episodes` prints the ledger: one line per episode with its
 steps, duration, condition and every plan column.
 
+### Collection view
+
+`collect_ui` shows the camera with the demo number, the recorder's state, the external force and
+the frame's capture timestamp drawn on it, and takes the recorder's keys from the window:
+
+```bash
+ros2 run hsa_ros2 collect_ui --ros-args -p latency.camera:=0.03    # the same value as recorder.yaml
+```
+
+`c` starts an episode, `s` stops and saves it, backspace twice drops it, `q` closes the view. The
+force shown is the wrench sample the recorder pairs with that frame (the newest stamp at or before
+the capture instant) with its age next to it. The recorder publishes its state as JSON on
+`/hsa_recorder/status` and writes each episode's pairing ages to the sidecar.
+
 ### Camera
 
 ```bash
@@ -243,3 +267,30 @@ your own uid. Measured 2026-09-29 on the dev laptop (RTX 500 Ada 4 GB, random-we
 50 inferences): forward pass 209 ms mean / 217 ms p95, request overhead 12 / 25 ms, whole request
 222 / 238 ms, `obs_age_s` 385 / 417 ms (with `latency.gopro` still at 109 ms), and 11 of 16
 waypoints per chunk still in the future when it arrived.
+
+## Figures
+
+`hsa_ros2/figures.py` draws every figure from plain arrays; the scripts only load the data.
+
+```bash
+scripts/plot_dataset.py ~/hsa_data/session --box config/teleop.yaml --3d   # workspace coverage of a dataset
+scripts/record_rollout.sh peg_01                                          # bag a rollout (policy or teleop), Ctrl-C to stop
+scripts/plot_rollout.py ~/hsa_data/rollouts/peg_01                        # chunks vs executed, latency timeline, tracking and force
+scripts/plot_outcomes.py ledger.csv                                       # start offsets by outcome, insertion depth, Wilson interval
+scripts/check_sync.py ~/hsa_data/session --episode 0                      # tap test: the frames around the force spike
+```
+
+The ledger's columns are those of `config/eval_ledger_example.csv`. `plot_rollout.py` needs the
+ROS environment (rosbag2 and TF); the others need only numpy, matplotlib and zarr.
+
+### Keeping force and frames in sync
+
+Both streams carry header stamps: the camera's in the laptop's clock, the wrench's in the
+station's, and chrony keeps the station on the laptop's clock (`ssh station chronyc tracking`
+should show an offset well under a millisecond). The recorder and `collect_ui` pair them by those
+stamps, never by arrival: the newest wrench sample at or before the frame's capture instant
+(`stamp - latency.camera`). That sample's age is on screen while collecting and in each episode's
+sidecar as `wrench_sample_age_s`. `check_sync.py` is the end-to-end check: record a short episode
+with the wrench enabled, tap the tool where the camera sees it, and the tap must be visible in the
+outlined frame or its neighbour (one frame is 33 ms). If it is consistently one frame late, raise
+`latency.camera`.
