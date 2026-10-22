@@ -92,8 +92,9 @@ def test_fer_robot_chains_check_ee_then_payload_then_spawner(actions):
     (set_load,) = register_check.event_handler.handle(SimpleNamespace(returncode=0, action=check), LaunchContext())
     assert 'set_payload.py' in _argv_text(set_load) and '--calib hsa_calib' in _argv_text(set_load)
     (register_load,) = [a for a in acts if isinstance(a, RegisterEventHandler)][:1]
-    (spawner,) = register_load.event_handler.handle(SimpleNamespace(returncode=0, action=set_load), LaunchContext())
+    spawner, revive = register_load.event_handler.handle(SimpleNamespace(returncode=0, action=set_load), LaunchContext())
     assert _argv_text(spawner).startswith('fer_arm_controller')
+    assert 'switch_controllers --activate franka_robot_state_broadcaster' in _argv_text(revive)
     assert '--switch-asap' in _argv_text(spawner)
 
 
@@ -103,7 +104,8 @@ def test_fr3_robot_has_no_ee_check_and_gates_the_spawner_on_the_payload(actions)
     started = _started(acts)
     assert any('set_payload.py' in s and '--calib tcp_calib' in s for s in started)
     assert not any('check_ee_frame.py' in s for s in started)
-    ((spawner,),) = _gated(acts).values()
+    ((spawner, revive),) = _gated(acts).values()
+    assert 'switch_controllers --activate franka_robot_state_broadcaster' in revive
     assert spawner.startswith('fr3_arm_controller -t joint_trajectory_controller/JointTrajectoryController')
     assert '--switch-asap' not in spawner, "Humble's spawner has no --switch-asap"
 

@@ -174,12 +174,23 @@ def launch_setup(context):
         cmd=['python3', str(NUC_DIR / 'set_payload.py'), CHECK_TIMEOUT_S, '--calib', robot.calib],
         output='screen',
     )
+    # SetLoad can make franka_robot_state_broadcaster's next update fail (up to ~0.5 s after it lands), and the
+    # controller manager then deactivates it for good: no external wrench, no force in the demos. Re-activate it
+    # once the payload has settled; a no-op when it survived.
+    broadcaster = 'franka_robot_state_broadcaster'
+    revive_broadcaster = ExecuteProcess(
+        cmd=['bash', '-c', f'sleep 2; if ros2 control list_controllers | grep {broadcaster} | grep -q inactive; then '
+             f'echo "[bringup] {broadcaster} went inactive after SetLoad; re-activating"; '
+             f'ros2 control switch_controllers --activate {broadcaster}; '
+             f'else echo "[bringup] {broadcaster} active"; fi'],
+        output='screen',
+    )  # fmt: skip
     actions.append(
         RegisterEventHandler(
             OnProcessExit(
                 target_action=set_load,
                 on_exit=gate(
-                    [arm_controller_spawner],
+                    [arm_controller_spawner, revive_broadcaster],
                     '\n!!! SetLoad FAILED (exit {code}) -- the payload did not configure.\n'
                     f'!!! NOT spawning {robot.arm_controller}: the impedance controller would fight gravity it\n'
                     '!!! does not know about, and setLoad cannot be retried once a controller holds the arm.\n'
