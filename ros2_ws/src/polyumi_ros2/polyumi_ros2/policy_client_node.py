@@ -246,7 +246,7 @@ class PolicyClientNode(Node):
         # Vista family, every member of which indexes obs['finger_rgb'] and obs['mic_0']
         # unconditionally — see the fork's docs/SENSOR_PROCESSING.md.
         self.declare_parameter('send_tactile', False)
-        # Force input for checkpoints trained with robot0_ext_wrench (task=polyumi_force): the Franka
+        # Force input for checkpoints trained with robot0_ext_wrench (task=hsa_umi_force): the Franka
         # external wrench, sampled at each frame's capture instant exactly as the HSA recorder stores it
         # (newest sample at or before stamp - latency.gopro).
         self.declare_parameter('send_wrench', False)

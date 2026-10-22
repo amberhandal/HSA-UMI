@@ -35,7 +35,7 @@
        hsa_session.sh turns it on when the package is present. -->
   <arg name="foxglove" default="false"/>
   <arg name="inference_config" default="$(find-pkg-share hsa_ros2)/config/inference.yaml"/>
-  <!-- true for a checkpoint trained with force (task=polyumi_force): sends robot0_ext_wrench. -->
+  <!-- true for a checkpoint trained with force (task=hsa_umi_force): sends robot0_ext_wrench. -->
   <arg name="send_wrench" default="false"/>
   <!-- The broadcaster publishes force at ~1 kHz, which starves the Python client's camera callback; point this at
        a throttled copy (topic_tools throttle on the station, ~100 Hz) when send_wrench is on. -->

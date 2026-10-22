@@ -57,6 +57,11 @@ flags and the dataset/output mounts. Any extra arguments pass straight through t
 **Hydra overrides** (`training.num_epochs=...`, `logging.mode=offline`, `task.dataset_path=...`,
 etc). Outputs (checkpoints, hydra logs) land in `data/dp_outputs/` by default (`OUTPUT_DIR`).
 
+`POLICY=hsa_umi` (`config/policy.hsa_umi.env`) runs the same `dp` fork and image with the HSA-UMI
+workspace config (`train_diffusion_unet_timm_hsa_umi_workspace`: task group `hsa_umi`, wandb project
+`hsa-umi`), so HSA runs are named `*_hsa_umi*`; `task=hsa_umi_force` / `task=hsa_umi_wrist` pick the
+variants. Use it for every HSA run; `POLICY=dp` stays PolyUMI's own.
+
 `CONFIG_NAME` selects which Hydra workspace config runs, for a fork that offers more than one (an
 env var rather than a Hydra override, because Hydra cannot set `--config-name` that way). Each
 policy's default is in its `config/policy.*.env`; set `CONFIG_NAME` in the calling shell to
