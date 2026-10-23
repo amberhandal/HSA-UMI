@@ -38,14 +38,15 @@ import numpy as np
 import rclpy
 import rclpy.time
 import tf2_ros
-from geometry_msgs.msg import Pose, PoseArray, WrenchStamped
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped, WrenchStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from foxglove_msgs.msg import RawAudio
 from sensor_msgs.msg import CompressedImage, Image, JointState
-from std_msgs.msg import Float32
+from scipy.spatial.transform import Rotation
+from std_msgs.msg import Bool, Float32
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException  # type: ignore[attr-defined]
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -66,6 +67,14 @@ from polyumi_inference import Observation, TransportError, WireFormatError
 from polyumi_inference.client import PolicyClient
 
 from polyumi_ros2.gripper_map import aperture_from_joint_state, policy_to_robot_width, robot_to_policy_width
+from polyumi_ros2.hsa_wrist import (
+    KEY_WRIST_IMAGE,
+    PLATE_KEYS,
+    WRIST_STATE_FIELDS,
+    plate_arrays,
+    resize_camera1_rgb,
+    wrist_state_arrays,
+)
 from polyumi_ros2.target_chunk import CONSUMER_HINT, TargetChunkPublisher, pose_array
 from polyumi_ros2.temporal_ensemble import TemporalEnsembler
 
@@ -252,6 +261,23 @@ class PolicyClientNode(Node):
         self.declare_parameter('send_wrench', False)
         self.declare_parameter('wrench_topic', '/franka_robot_state_broadcaster/external_wrench_in_base_frame')
         self.declare_parameter('max_wrench_age_s', 0.1)
+        # The HSA wrist, for checkpoints trained with task=hsa_umi_wrist: the wrist state
+        # (robot0_wrist_*), the plate pose (robot0_plate_*) and the baseplate camera (camera1_rgb),
+        # each sampled at the frame's capture instant the way the recorder stores it
+        # (polyumi_ros2.hsa_wrist). The wrist stack must be running and extended as in the demos;
+        # send_wrist needs hsa_wrist_msgs from the wrist workspace sourced.
+        self.declare_parameter('send_wrist', False)
+        self.declare_parameter('wrist_state_topic', '/hsa/wrist/state')
+        self.declare_parameter('max_wrist_age_s', 0.1)
+        self.declare_parameter('send_plate', False)
+        self.declare_parameter('plate_pose_topic', '/platform_pose')
+        self.declare_parameter('plate_visible_topic', '/platform_tag_visible')
+        # Older than this (tags lost): the pose is held and robot0_plate_visible is 0, as recorded.
+        self.declare_parameter('max_plate_age_s', 0.2)
+        self.declare_parameter('send_camera1', False)
+        self.declare_parameter('camera1_topic', '/tracking_cam/image_raw')
+        self.declare_parameter('max_camera1_age_s', 0.2)
+        self.declare_parameter('latency.camera1', 0.0)
         self.declare_parameter('finger_image_topic', '/pi/camera/image/compressed')
         self.declare_parameter('audio_topic', '/pi/audio/raw')
         # Rows of `mic_0` per request — the policy's `audio_obs_horizon`. THIS MUST MATCH THE
@@ -312,6 +338,7 @@ class PolicyClientNode(Node):
             'proprio': self.get_parameter('latency.proprio').get_parameter_value().double_value,
             'arm_exec': self.get_parameter('latency.arm_exec').get_parameter_value().double_value,
             'gripper_exec': self.get_parameter('latency.gripper_exec').get_parameter_value().double_value,
+            'camera1': self.get_parameter('latency.camera1').get_parameter_value().double_value,
             'gripper': self.get_parameter('latency.gripper').get_parameter_value().double_value,
         }
         self._ee_pose_buffer_s = self.get_parameter('buffers.ee_pose_s').get_parameter_value().double_value
@@ -370,6 +397,25 @@ class PolicyClientNode(Node):
         # (stamp_s, wrench6), newest last; ~1 kHz, so sized for the same window as the pose buffer.
         self._wrench_history: deque = deque(maxlen=max(100, int(self._ee_pose_buffer_s * 1000)))
         self._wrench_lock = threading.Lock()
+        # --- HSA wrist channels (only populated when the send_* flags are on) ---
+        self._send_wrist = self.get_parameter('send_wrist').get_parameter_value().bool_value
+        self._max_wrist_age_s = self.get_parameter('max_wrist_age_s').get_parameter_value().double_value
+        # (stamp_s, {key: (6,)}) at 100 Hz, newest last.
+        self._wrist_history: deque = deque(maxlen=max(50, int(self._ee_pose_buffer_s * 150)))
+        self._wrist_lock = threading.Lock()
+        self._send_plate = self.get_parameter('send_plate').get_parameter_value().bool_value
+        self._max_plate_age_s = self.get_parameter('max_plate_age_s').get_parameter_value().double_value
+        # (stamp_s, pose6) at the detector's rate; the visible flag is the newest value of its topic.
+        self._plate_history: deque = deque(maxlen=max(50, int(self._ee_pose_buffer_s * 150)))
+        self._plate_visible = False
+        self._plate_lock = threading.Lock()
+        self._send_camera1 = self.get_parameter('send_camera1').get_parameter_value().bool_value
+        self._max_camera1_age_s = self.get_parameter('max_camera1_age_s').get_parameter_value().double_value
+        # (stamp, resized frame) for the baseplate camera, like _image_history; its newest stamp joins
+        # _observation_instant so every channel describes the same moment.
+        self._camera1_history: deque = deque(maxlen=max(8, int(self._ee_pose_buffer_s * 130)))
+        self._latest_camera1_stamp: rclpy.time.Time | None = None
+        self._camera1_lock = threading.Lock()
         self._n_audio_rows = self.get_parameter('n_audio_rows').get_parameter_value().integer_value
         self._max_finger_age_s = self.get_parameter('max_finger_age_s').get_parameter_value().double_value
         # -1 stands in for finger_camera.yaml's `null`, i.e. the frame's own edge.
@@ -489,6 +535,49 @@ class PolicyClientNode(Node):
                 50,
                 callback_group=MutuallyExclusiveCallbackGroup(),
             )
+        if self._send_wrist:
+            try:
+                from hsa_wrist_msgs.msg import WristState
+            except ImportError as e:
+                raise RuntimeError(
+                    'send_wrist needs hsa_wrist_msgs: source the wrist workspace '
+                    '(~/hsa-ws/wrist_control/odrive_ros_ws/install/setup.bash) in this terminal'
+                ) from e
+            self.create_subscription(
+                WristState,
+                self.get_parameter('wrist_state_topic').get_parameter_value().string_value,
+                self._wrist_cb,
+                20,
+                callback_group=MutuallyExclusiveCallbackGroup(),
+            )
+        if self._send_plate:
+            plate_group = MutuallyExclusiveCallbackGroup()
+            self.create_subscription(
+                PoseStamped,
+                self.get_parameter('plate_pose_topic').get_parameter_value().string_value,
+                self._plate_cb,
+                20,
+                callback_group=plate_group,
+            )
+            self.create_subscription(
+                Bool,
+                self.get_parameter('plate_visible_topic').get_parameter_value().string_value,
+                self._plate_visible_cb,
+                20,
+                callback_group=plate_group,
+            )
+        if self._send_camera1:
+            # Its own group: 3 MB raw frames at up to 120 Hz must not queue behind the control tick.
+            camera1_topic = self.get_parameter('camera1_topic').get_parameter_value().string_value
+            if camera1_topic.endswith('/compressed'):
+                self.create_subscription(
+                    CompressedImage, camera1_topic, self._camera1_compressed_cb, 1,
+                    callback_group=MutuallyExclusiveCallbackGroup(),
+                )  # fmt: skip
+            else:
+                self.create_subscription(
+                    Image, camera1_topic, self._camera1_cb, 1, callback_group=MutuallyExclusiveCallbackGroup()
+                )
         if self._send_tactile:
             # Both on their own callback groups for the reason the gripper has one: audio arrives
             # in a steady stream that must not be serialised behind a control tick, or the ring
@@ -541,6 +630,12 @@ class PolicyClientNode(Node):
             mode += f' via {self._target_pub.topic_name}'
         preview = 'on (/polyumi/target_poses_preview)' if self._publish_preview else 'off'
         self.get_logger().info(f'policy_client_node started — server: {self._url} — mode: {mode} — preview: {preview}')
+        if self._send_wrist or self._send_plate or self._send_camera1:
+            self.get_logger().info(
+                f'HSA wrist channels: wrist={"on" if self._send_wrist else "off"} '
+                f'plate={"on" if self._send_plate else "off"} camera1={"on" if self._send_camera1 else "off"} '
+                '(the wrist stack must be up and extended as in the demos)'
+            )
         stride_interval = self._steps_per_inference * self._action_dt
         tau_s = self.get_parameter('temporal_ensemble_tau_s').get_parameter_value().double_value
         # Worth saying out loud either way: with it on, the commanded chunk is not what the model
@@ -788,6 +883,12 @@ class PolicyClientNode(Node):
         if image_stamp is None:
             return None
         instants = [image_stamp - Duration(seconds=self._latency['gopro'])]
+        if self._send_camera1:
+            with self._camera1_lock:
+                camera1_stamp = self._latest_camera1_stamp
+            if camera1_stamp is None:
+                return None
+            instants.append(camera1_stamp - Duration(seconds=self._latency['camera1']))
         if self._send_tactile:
             with self._latest_finger_lock:
                 finger_stamp = self._latest_finger_stamp
@@ -958,11 +1059,24 @@ class PolicyClientNode(Node):
                     self._warn_throttled(f'Finger frame {age:.3f}s stale (limit {self._max_finger_age_s}s)')
                 else:
                     finger = candidate
-        wrench = None
-        if self._send_wrench:
-            t_capture = image_stamp - Duration(seconds=self._latency['gopro'])
-            wrench = self._wrench_at(t_capture.nanoseconds * 1e-9)
-        self._obs_buffer.append((image, agent_pos, finger, wrench))
+        t_capture_s = (image_stamp - Duration(seconds=self._latency['gopro'])).nanoseconds * 1e-9
+        wrench = self._wrench_at(t_capture_s) if self._send_wrench else None
+        # The wrist channels, each as the recorder paired it with this frame. None marks a missing
+        # sample; the request below is skipped rather than sent with a hole.
+        wrist = self._wrist_at(t_capture_s) if self._send_wrist else None
+        plate = self._plate_at(t_capture_s) if self._send_plate else None
+        camera1 = None
+        if self._send_camera1:
+            with self._camera1_lock:
+                found = self._frame_at(self._camera1_history, t_obs, self._latency['camera1'])
+            if found is not None:
+                camera1_stamp, candidate = found
+                age = (self.get_clock().now() - camera1_stamp).nanoseconds / 1e9
+                if age > self._max_camera1_age_s:
+                    self._warn_throttled(f'camera1 frame {age:.3f}s stale (limit {self._max_camera1_age_s}s)')
+                else:
+                    camera1 = candidate
+        self._obs_buffer.append((image, agent_pos, finger, wrench, wrist, plate, camera1))
         if len(self._obs_buffer) < self._n_obs_steps:
             self._warn_throttled(f'Observation buffer filling ({len(self._obs_buffer)}/{self._n_obs_steps})')
             return
@@ -1001,6 +1115,30 @@ class PolicyClientNode(Node):
                 )
                 return
             channels['robot0_ext_wrench'] = np.stack(wrenches).astype(np.float32)
+        if self._send_wrist:
+            samples = [entry[4] for entry in self._obs_buffer]
+            if any(w is None for w in samples):
+                self._warn_throttled(
+                    f'Skipping inference: no wrist state within {self._max_wrist_age_s}s of a frame '
+                    '(is wrist_state_publisher up?)'
+                )
+                return
+            # Every wrist column goes on the wire; the server keeps the ones the checkpoint trained on.
+            for key in WRIST_STATE_FIELDS:
+                channels[key] = np.stack([w[key] for w in samples]).astype(np.float32)
+        if self._send_plate:
+            samples = [entry[5] for entry in self._obs_buffer]
+            if any(p is None for p in samples):
+                self._warn_throttled('Skipping inference: no plate pose yet (platform zero set, tags in view?)')
+                return
+            for key in PLATE_KEYS:
+                channels[key] = np.stack([p[key] for p in samples]).astype(np.float32)
+        if self._send_camera1:
+            frames = [entry[6] for entry in self._obs_buffer]
+            if any(frame is None for frame in frames):
+                self._warn_throttled('Skipping inference: no fresh camera1 frame for every step')
+                return
+            channels[KEY_WRIST_IMAGE] = np.stack(frames)
         if self._send_tactile:
             # Both tactile channels are all-or-nothing for a request: the Vista family indexes
             # them unconditionally, and the wire format deliberately refuses a partial frame
@@ -1042,6 +1180,86 @@ class PolicyClientNode(Node):
             if stamp <= t_capture_s:
                 return sample if t_capture_s - stamp <= self._max_wrench_age_s else None
         return None
+
+    @staticmethod
+    def _held_at(history: deque, lock: threading.Lock, t_capture_s: float):
+        """Newest ``(stamp_s, sample)`` in ``history`` stamped at or before ``t_capture_s`` as ``(sample, age_s)``, or None."""
+        with lock:
+            items = list(history)
+        for stamp, sample in reversed(items):
+            if stamp <= t_capture_s:
+                return sample, t_capture_s - stamp
+        return None
+
+    def _wrist_cb(self, msg) -> None:
+        """Buffer one WristState as the recorder's per-axis columns, under its header stamp."""
+        with self._wrist_lock:
+            self._wrist_history.append((msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, wrist_state_arrays(msg)))
+
+    def _wrist_at(self, t_capture_s: float) -> dict | None:
+        """The wrist columns at the capture instant (zero-order hold, as recorded), or None if none is fresh."""
+        found = self._held_at(self._wrist_history, self._wrist_lock, t_capture_s)
+        if found is None or found[1] > self._max_wrist_age_s:
+            return None
+        return found[0]
+
+    def _plate_cb(self, msg: PoseStamped) -> None:
+        """Buffer the plate's pose in platform_zero as [pos, rotvec], under its header stamp."""
+        q = msg.pose.orientation
+        pose6 = np.concatenate(
+            [
+                [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z],
+                Rotation.from_quat([q.x, q.y, q.z, q.w]).as_rotvec(),
+            ]
+        )
+        with self._plate_lock:
+            self._plate_history.append((msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, pose6))
+
+    def _plate_visible_cb(self, msg: Bool) -> None:
+        with self._plate_lock:
+            self._plate_visible = bool(msg.data)
+
+    def _plate_at(self, t_capture_s: float) -> dict | None:
+        """
+        The plate keys at the capture instant, exactly as the recorder stores them.
+
+        The newest pose at or before the instant is used even when old (the recorder holds it), and
+        robot0_plate_visible is 1 only when that pose is within max_plate_age_s and the tags are seen.
+        None only before any pose at all: a policy fed NaN is not a policy.
+        """
+        found = self._held_at(self._plate_history, self._plate_lock, t_capture_s)
+        if found is None:
+            return None
+        pose6, age = found
+        with self._plate_lock:
+            visible = self._plate_visible
+        return plate_arrays(pose6, age <= self._max_plate_age_s and visible)
+
+    def _camera1_store(self, frame_rgb: np.ndarray, stamp) -> None:
+        resized = resize_camera1_rgb(frame_rgb)
+        with self._camera1_lock:
+            self._latest_camera1_stamp = rclpy.time.Time.from_msg(stamp)
+            self._camera1_history.append((self._latest_camera1_stamp, resized))
+
+    def _camera1_cb(self, msg: Image) -> None:
+        """Resize a baseplate-camera frame to camera1_rgb (whole frame, no crop) and cache it with its stamp."""
+        if msg.encoding not in ('rgb8', 'bgr8', 'mono8'):
+            self._warn_throttled(f'camera1: unsupported image encoding {msg.encoding!r}')
+            return
+        if msg.encoding == 'mono8':
+            img = np.repeat(np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 1), 3, axis=2)
+        else:
+            img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+            if msg.encoding == 'bgr8':
+                img = img[:, :, ::-1]
+        self._camera1_store(img, msg.header.stamp)
+
+    def _camera1_compressed_cb(self, msg: CompressedImage) -> None:
+        bgr = cv2.imdecode(np.frombuffer(msg.data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            self._warn_throttled(f'camera1: could not decode a compressed frame (format={msg.format!r})')
+            return
+        self._camera1_store(bgr[:, :, ::-1], msg.header.stamp)
 
     def _lookup_agent_pos(self, image_stamp: rclpy.time.Time) -> np.ndarray | None:
         """

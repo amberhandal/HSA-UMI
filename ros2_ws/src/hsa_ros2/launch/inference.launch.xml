@@ -40,6 +40,13 @@
   <!-- The broadcaster publishes force at ~1 kHz, which starves the Python client's camera callback; point this at
        a throttled copy (topic_tools throttle on the station, ~100 Hz) when send_wrench is on. -->
   <arg name="wrench_topic" default="/franka_robot_state_broadcaster/external_wrench_in_base_frame"/>
+  <!-- true for a checkpoint trained with the wrist (task=hsa_umi_wrist): the wrist state (robot0_wrist_*), the
+       plate pose (robot0_plate_*) and the baseplate camera (camera1_rgb). The wrist stack must be running
+       (ros2 launch wrist_control wrist_control.launch.py) and extended as in the demos. -->
+  <arg name="send_wrist" default="false"/>
+  <arg name="send_plate" default="false"/>
+  <arg name="send_camera1" default="false"/>
+  <arg name="camera1_topic" default="/tracking_cam/image_raw"/>
 
   <include file="$(find-pkg-share hsa_ros2)/launch/camera.launch.xml" if="$(var camera)"/>
 
@@ -60,5 +67,9 @@
     <param name="tf_use_latest" value="$(var tf_use_latest)"/>
     <param name="send_wrench" value="$(var send_wrench)"/>
     <param name="wrench_topic" value="$(var wrench_topic)"/>
+    <param name="send_wrist" value="$(var send_wrist)"/>
+    <param name="send_plate" value="$(var send_plate)"/>
+    <param name="send_camera1" value="$(var send_camera1)"/>
+    <param name="camera1_topic" value="$(var camera1_topic)"/>
   </node>
 </launch>

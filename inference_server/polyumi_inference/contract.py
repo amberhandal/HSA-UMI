@@ -52,7 +52,10 @@ def validate_observation(obs: Observation, required: Iterable[str] = REQUIRED_CH
     # same thing; a mismatch means the client packed something other than what it says it packed.
     # ndim first: a 0-d channel (shape ()) has no [0] to read, and shape[0] on it raises IndexError
     # rather than the WireFormatError this is supposed to turn a bad frame into.
-    for name in required:
+    # Every channel, not only the required ones: an optional channel (force, the wrist's columns,
+    # a second camera) is indexed per step by the policy just the same, so a wrong leading dim
+    # would surface as a shape error deep in the encoder instead of a 422 here.
+    for name in obs.names():
         # mic_0 is exempt: it is a window of audio rows, not one entry per step, so its leading
         # dim is audio_obs_horizon. Checked on its own terms below.
         if name == MIC0_CHANNEL:
