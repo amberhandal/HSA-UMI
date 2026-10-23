@@ -47,6 +47,7 @@ setup(
             'export_dataset = hsa_ros2.export_dataset:main',
             'diag_stats = hsa_ros2.diag_stats:main',
             'collect_ui = hsa_ros2.collect_ui:main',
+            'rollout_ledger = hsa_ros2.rollout_ledger:main',
         ],
     },
 )

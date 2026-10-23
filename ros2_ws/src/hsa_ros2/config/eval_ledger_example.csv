@@ -1,6 +1,6 @@
-rollout,placement_id,dx_mm,dy_mm,dtheta_deg,outcome,failure_code,insertion_depth_mm,time_s,hsa_hours,notes
-1,P01,0,0,0,success,,25.0,8.4,12.5,
-2,P02,20,0,0,success,,25.0,11.2,12.5,
-3,P03,0,20,0,failure,miss,0.0,30.0,12.5,timeout
-4,P04,-20,0,0,failure,jam,9.5,30.0,12.5,tilted at entry
-5,P05,0,-20,15,success,,24.0,14.9,12.6,
+rollout,placement_id,dx_mm,dy_mm,dtheta_deg,outcome,failure_code,insertion_depth_mm,time_s,hsa_hours,notes,checkpoint,condition,bag,started_at
+1,P01,0,0,0,success,,25.0,8.4,12.5,,ep025,wrist_extended,r_01,
+2,P02,20,0,0,success,,25.0,11.2,12.5,,ep025,wrist_extended,r_02,
+3,P03,0,20,0,failure,miss,0.0,30.0,12.5,timeout,ep025,wrist_extended,r_03,
+4,P04,-20,0,0,failure,jam,9.5,30.0,12.5,tilted at entry,ep025,wrist_extended,r_04,
+5,P05,0,-20,15,success,,24.0,14.9,12.6,,ep025,wrist_extended,r_05,
