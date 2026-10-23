@@ -93,6 +93,8 @@ echo "==> Installing polyumi_inference for the ROS node on ${HOST} ..."
 ssh -o ConnectTimeout=10 "${HOST}" \
     "cd ${REPO} && pip install --user --break-system-packages --no-deps -e inference_server/"
 
-echo "==> Done. Next:"
-echo "      ./fr3_session.sh                                          # inference"
-echo "      ssh ${HOST} 'cd ${REPO} && ./train_policy.sh'             # training"
+echo "==> Done. Next (serve and train run FROM the repo root on ${HOST}, e.g. in a tmux window):"
+echo "      ./hsa_session.sh                                              # inference (robot:=fer)"
+echo "      ssh ${HOST}   then   cd ${REPO}"
+echo "      POLICY=hsa_umi CKPT=... ./serve_policy.sh                     # serve a checkpoint"
+echo "      POLICY=hsa_umi DATASET=... ./train_policy.sh                  # training"

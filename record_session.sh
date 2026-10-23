@@ -41,7 +41,8 @@ if [ "${1:-}" = --kill ]; then
 fi
 
 WRIST="${WRIST:-1}"
-WRIST_CAM="${WRIST_CAM:-/dev/video8}"      # the Arducam OV9281 (v4l2-ctl --list-devices)
+# The Arducam OV9281 by its stable path: /dev/videoN moves whenever the RealSense re-enumerates first.
+WRIST_CAM="${WRIST_CAM:-/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam_OV9281_USB_Camera_UC762-video-index0}"
 if [ "$WRIST" = 1 ]; then
   DATA="${1:-data/key_in_hole/wrist/v1}"
   CONDITION="${2:-wrist_extended}"
@@ -78,7 +79,8 @@ RECORDER="ros2 run hsa_ros2 demo_recorder --ros-args --params-file ros2_ws/src/h
 # can0 is the candleLight USB adapter; the launch is the whole wrist (odrive_can bridges, hsa_odrive_control,
 # wrist_state_publisher, baseplate camera + AprilTag + platform_pose + plate_guard). No OpenCV window: collect_ui
 # shows the plate numbers and the GUI the mount banner.
-WRIST_LAUNCH="sudo ip link set can0 up type can bitrate 500000 && sudo ip link set can0 txqueuelen 1000; ros2 launch wrist_control wrist_control.launch.py show_window:=false video_device:=$WRIST_CAM"
+# modprobe first: the candleLight enumerates on USB without gs_usb loaded, and then there is no can0 to bring up.
+WRIST_LAUNCH="sudo modprobe gs_usb && sudo ip link set can0 up type can bitrate 500000 && sudo ip link set can0 txqueuelen 1000; ros2 launch wrist_control wrist_control.launch.py show_window:=false video_device:=$WRIST_CAM"
 WRIST_GUI="ros2 run wrist_control joint_commander_gui"
 WRIST_CHECK="ros2 topic hz /hsa/wrist/state /platform_pose /tracking_cam/image_raw"
 # Numbered when it runs, not when the session starts: Up + Enter after a ^C then opens the next session_NN
