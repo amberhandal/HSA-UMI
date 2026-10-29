@@ -14,6 +14,11 @@ first chunk reaches /polyumi/target_poses_traj (the moment the arm is told to mo
 After s or f the depth, HSA hours and a note are asked on one line each (Enter leaves them empty). Rows
 carry the columns of config/eval_ledger_example.csv (plot_outcomes.py reads them) plus the checkpoint, the
 condition, the newest bag under <ledger dir>/bags and the start time, so a row finds its bag.
+
+Rest check: the plate pose at home (median over the last second before the first chunk) is compared with
+the demos' episode starts and stored with the row. HSAs that took a set under load sit off that pose, and
+the policy's plate inputs then start outside what it was trained on; the status line shows the check live
+so it can be fixed before the client starts.
 """
 
 from __future__ import annotations
@@ -25,8 +30,10 @@ import select
 import sys
 import termios
 import threading
+import math
 import time
 import tty
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -53,9 +60,20 @@ COLUMNS = (
     'condition',
     'bag',
     'started_at',
+    'plate_rest_x_mm',
+    'plate_rest_y_mm',
+    'plate_rest_z_mm',
+    'plate_rest_rot_deg',
+    'plate_rest_ok',
 )
 #: A gap this long without a chunk, then a chunk, is a new trial (a relaunched client).
 DEFAULT_IDLE_GAP_S = 3.0
+#: Plate pose at the episode starts of data/key_in_hole/wrist/v1 (102 demos, measured 2026-10-29): mean and
+#: two standard deviations of robot0_plate_pos (mm) and of its rotation angle (deg).
+DEFAULT_REST_MM = [0.3, 2.9, -11.3]
+DEFAULT_REST_TOL_MM = [2.6, 1.8, 1.8]
+DEFAULT_REST_ROT_DEG = 9.4
+DEFAULT_REST_ROT_TOL_DEG = 3.4
 
 
 @dataclass
@@ -129,11 +147,59 @@ class TrialClock:
 
 
 @dataclass
+class RestCheck:
+    """Where the plate should sit at home, and how far off it may be."""
+
+    centre_mm: tuple[float, float, float] = tuple(DEFAULT_REST_MM)
+    tol_mm: tuple[float, float, float] = tuple(DEFAULT_REST_TOL_MM)
+    rot_deg: float = DEFAULT_REST_ROT_DEG
+    rot_tol_deg: float = DEFAULT_REST_ROT_TOL_DEG
+
+    def evaluate(self, pos_mm: np.ndarray, rot_deg: float) -> tuple[bool, str]:
+        """(ok, ``rest OK`` or ``REST OFF x-6.3 rot+5.0``) naming each axis outside its tolerance."""
+        off = [
+            f'{a}{d:+.1f}' for a, d, tol in zip('xyz', np.asarray(pos_mm) - self.centre_mm, self.tol_mm) if abs(d) > tol
+        ]
+        if abs(rot_deg - self.rot_deg) > self.rot_tol_deg:
+            off.append(f'rot{rot_deg - self.rot_deg:+.1f}')
+        return (not off), ('rest OK' if not off else 'REST OFF ' + ' '.join(off))
+
+
+def rotation_deg(qx: float, qy: float, qz: float, qw: float) -> float:
+    """Rotation angle of a unit quaternion, degrees (the norm of the axis-angle vector)."""
+    return math.degrees(2.0 * math.atan2(math.sqrt(qx * qx + qy * qy + qz * qz), abs(qw)))
+
+
+def rest_pose(samples, until: float, window_s: float) -> tuple[np.ndarray, float] | None:
+    """Median (pos_mm, rot_deg) of the ``(t, pos_mm, rot_deg)`` samples in ``[until - window_s, until)``."""
+    picked = [(p, r) for t, p, r in samples if until - window_s <= t < until]
+    if not picked:
+        return None
+    return np.median([p for p, _ in picked], axis=0), float(np.median([r for _, r in picked]))
+
+
+def rest_columns(rest: tuple[np.ndarray, float] | None, check: RestCheck) -> dict:
+    """Build the ``plate_rest_*`` columns (empty without a plate pose)."""
+    if rest is None:
+        return {}
+    pos, rot = rest
+    ok, _ = check.evaluate(pos, rot)
+    return {
+        'plate_rest_x_mm': f'{pos[0]:.1f}',
+        'plate_rest_y_mm': f'{pos[1]:.1f}',
+        'plate_rest_z_mm': f'{pos[2]:.1f}',
+        'plate_rest_rot_deg': f'{rot:.1f}',
+        'plate_rest_ok': int(ok),
+    }
+
+
+@dataclass
 class Live:
     """The latest readings shown on the status line."""
 
     force: np.ndarray | None = None
     plate_z_m: float | None = None
+    rest: str = ''
     last_row: dict | None = None
     placement: Placement = field(default_factory=Placement)
 
@@ -210,6 +276,7 @@ def make_row(
     condition: str = '',
     bag: str = '',
     started_at: str = '',
+    rest: dict | None = None,
 ) -> dict:
     """One ledger row in ``COLUMNS`` order."""
     return {
@@ -228,6 +295,7 @@ def make_row(
         'condition': condition,
         'bag': bag,
         'started_at': started_at,
+        **(rest or {}),
     }
 
 
@@ -240,6 +308,8 @@ def status_line(rollout: int, clock: TrialClock, live: Live, now: float) -> str:
         when = f'{state.upper()} {now - clock.start:5.1f} s  {clock.chunks} chunks'
     force = 'F  --' if live.force is None else f'F {float(np.linalg.norm(live.force[:3])):4.1f} N'
     plate = 'plate  --' if live.plate_z_m is None else f'plate {live.plate_z_m * 1e3:+.1f} mm'
+    if live.rest:
+        plate += f'  {live.rest}'
     last = ''
     if live.last_row:
         r = live.last_row
@@ -306,6 +376,13 @@ class RolloutLedger(Node):
         wrench_topic = str(p('wrench_topic', '/hsa/wrench_100hz').value)
         plate_topic = str(p('plate_topic', '/platform_pose').value)
         placement = str(p('placement', '').value)
+        self.rest_check = RestCheck(
+            tuple(float(v) for v in p('rest_plate_mm', DEFAULT_REST_MM).value),
+            tuple(float(v) for v in p('rest_tol_mm', DEFAULT_REST_TOL_MM).value),
+            float(p('rest_rot_deg', DEFAULT_REST_ROT_DEG).value),
+            float(p('rest_rot_tol_deg', DEFAULT_REST_ROT_TOL_DEG).value),
+        )
+        self.rest_window_s = float(p('rest_window_s', 1.0).value)
 
         self.lock = threading.Lock()
         self.clock = TrialClock(idle_gap_s=idle_gap)
@@ -313,6 +390,8 @@ class RolloutLedger(Node):
         if placement:
             self.live.placement = Placement.parse(placement)
         self.started_at = ''
+        self.plate: deque = deque()  # (t, pos_mm, rot_deg) over the last rest_window_s
+        self.trial_rest: tuple[np.ndarray, float] | None = None
 
         self.create_subscription(MultiDOFJointTrajectory, start_topic, self._chunk_cb, 10)
         self.create_subscription(WrenchStamped, wrench_topic, self._wrench_cb, 10)
@@ -323,9 +402,13 @@ class RolloutLedger(Node):
         )
 
     def _chunk_cb(self, _msg: MultiDOFJointTrajectory) -> None:
+        now = time.time()
         with self.lock:
-            if self.clock.on_chunk(time.time()):
+            if self.clock.on_chunk(now):
                 self.started_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                self.trial_rest = rest_pose(self.plate, now, self.rest_window_s)
+                if self.trial_rest is not None:
+                    self.live.rest = self.rest_check.evaluate(*self.trial_rest)[1] + ' at start'
 
     def _wrench_cb(self, msg: WrenchStamped) -> None:
         w = msg.wrench
@@ -333,8 +416,18 @@ class RolloutLedger(Node):
             self.live.force = np.array([w.force.x, w.force.y, w.force.z, w.torque.x, w.torque.y, w.torque.z])
 
     def _plate_cb(self, msg: PoseStamped) -> None:
+        now = time.time()
+        p, q = msg.pose.position, msg.pose.orientation
+        pos_mm = np.array([p.x, p.y, p.z]) * 1e3
+        rot = rotation_deg(q.x, q.y, q.z, q.w)
         with self.lock:
-            self.live.plate_z_m = float(msg.pose.position.z)
+            self.live.plate_z_m = float(p.z)
+            self.plate.append((now, pos_mm, rot))
+            while self.plate and self.plate[0][0] < now - self.rest_window_s:
+                self.plate.popleft()
+            if self.clock.start is None:  # between trials: the live rest check
+                rest = rest_pose(self.plate, now + 1e-6, self.rest_window_s)
+                self.live.rest = self.rest_check.evaluate(*rest)[1] if rest else ''
 
     # ------------------------------------------------------------------ the key loop
 
@@ -343,6 +436,8 @@ class RolloutLedger(Node):
         with self.lock:
             time_s = self.clock.mark(time.time())
             started_at = self.started_at
+            rest = rest_columns(self.trial_rest, self.rest_check)
+            self.trial_rest = None
             placement = self.live.placement
         code = keys.ask('failure code (miss, jam, timeout, ...): ') if outcome == 'failure' else ''
         depth = keys.ask('insertion depth mm (Enter = unknown): ')
@@ -361,6 +456,7 @@ class RolloutLedger(Node):
             condition=self.condition,
             bag=newest_bag(self.bags_dir),
             started_at=started_at,
+            rest=rest,
         )
         append_row(self.ledger, row)
         with self.lock:
@@ -380,7 +476,14 @@ class RolloutLedger(Node):
                 continue
             if k in ('s', 'f'):
                 row = self.record(keys, 'success' if k == 's' else 'failure')
-                sys.stdout.write(f'  -> row {row["rollout"]}: {row["outcome"]} {row["time_s"]} s, bag {row["bag"] or "-"}\n')
+                rest = (
+                    ''
+                    if row.get('plate_rest_ok', '') == ''
+                    else ('  rest OK' if row['plate_rest_ok'] else '  REST OFF')
+                )
+                sys.stdout.write(
+                    f'  -> row {row["rollout"]}: {row["outcome"]} {row["time_s"]} s, bag {row["bag"] or "-"}{rest}\n'
+                )
             elif k == 'p':
                 text = keys.ask('placement: id dx_mm dy_mm dtheta_deg : ')
                 try:

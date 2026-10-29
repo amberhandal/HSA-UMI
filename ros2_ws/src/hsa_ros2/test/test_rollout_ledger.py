@@ -64,11 +64,48 @@ def test_status_line():
     """Waiting, running with force and plate, and the last row."""
     live = rl.Live()
     c = rl.TrialClock()
-    assert rl.status_line(3, c, live, 0.0).startswith('#3 P00 (+0, +0, +0 deg)  waiting for the first chunk  F  --  plate  --')
+    assert rl.status_line(3, c, live, 0.0).startswith(
+        '#3 P00 (+0, +0, +0 deg)  waiting for the first chunk  F  --  plate  --'
+    )
     c.on_chunk(100.0)
     live.force = np.array([3.0, 4.0, 0.0, 0, 0, 0])
     live.plate_z_m = -0.0121
     live.last_row = rl.make_row(2, rl.Placement(), 'failure', 30.0, failure_code='miss')
     line = rl.status_line(3, c, live, 102.0)
     assert 'RUNNING   2.0 s  1 chunks' in line and 'F  5.0 N' in line and 'plate -12.1 mm' in line
+    live.rest = 'REST OFF x-6.3'
+    assert 'plate -12.1 mm  REST OFF x-6.3' in rl.status_line(3, c, live, 102.0)
     assert line.endswith('| last #2 failure miss 30.0 s  [s f p u q]')
+
+
+def test_rest_check_names_the_axes_that_are_off():
+    """Inside every tolerance is OK; each axis outside it is named with its offset."""
+    check = rl.RestCheck((0.3, 2.9, -11.3), (2.6, 1.8, 1.8), 9.4, 3.4)
+    assert check.evaluate(np.array([-2.0, 2.9, -12.1]), 8.0) == (True, 'rest OK')
+    assert check.evaluate(np.array([-6.0, 2.9, -11.3]), 15.0) == (False, 'REST OFF x-6.3 rot+5.6')
+
+
+def test_rest_pose_is_the_median_before_the_start():
+    """Samples at or after the start and older than the window are ignored."""
+    samples = [(t, np.array([t, 0.0, 0.0]), 10.0 + t) for t in (0.0, 9.2, 9.5, 9.8, 10.0)]
+    pos, rot = rl.rest_pose(samples, until=10.0, window_s=1.0)
+    assert np.allclose(pos, [9.5, 0, 0]) and rot == 19.5
+    assert rl.rest_pose(samples, until=20.0, window_s=1.0) is None
+
+
+def test_rotation_deg():
+    """Identity is 0; a 90 deg turn about z is 90 either sign of w."""
+    assert rl.rotation_deg(0, 0, 0, 1) == 0.0
+    s = np.sqrt(0.5)
+    assert np.isclose(rl.rotation_deg(0, 0, s, s), 90.0) and np.isclose(rl.rotation_deg(0, 0, -s, -s), 90.0)
+
+
+def test_rest_columns_land_in_the_row(tmp_path):
+    """The rest pose goes into the plate_rest_* columns; a row without a plate leaves them empty."""
+    cols = rl.rest_columns((np.array([-6.04, 2.9, -11.3]), 9.0), rl.RestCheck())
+    path = tmp_path / 'ledger.csv'
+    rl.append_row(path, rl.make_row(1, rl.Placement(), 'failure', 20.0, rest=cols))
+    rl.append_row(path, rl.make_row(2, rl.Placement(), 'success', 20.0))
+    rows = rl.read_rows(path)
+    assert rows[0]['plate_rest_x_mm'] == '-6.0' and rows[0]['plate_rest_ok'] == '0'
+    assert rows[1]['plate_rest_ok'] == ''
