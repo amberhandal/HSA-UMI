@@ -1,9 +1,10 @@
 """
-The measured constants of what HSA-UMI bolts to the FER's flange: the TCP frame, and the payload.
+The measured constants of what HSA-UMI bolts to the arm's flange: the TCP frame, and the payload.
 
-``hsa_tcp`` is the wrist's moving plate at its neutral servo setpoint, a fixed child of ``fer_link8``. Its
+``hsa_tcp`` is the wrist's moving plate at its neutral servo setpoint, a fixed child of ``<arm>_link8``. The arm is
+$HSA_ROBOT's (nuc/robots.py): the FER always carries an HSA tool, the FR3 only when HSA_TOOL names one. Its
 consumers -- TF (bringup.launch.py) and the streaming controller (``tcp_frame`` in
-nuc/config/hsa_controllers.yaml) -- must agree, so the numbers live here and nowhere else. Values marked
+nuc/config/hsa_controllers*.yaml) -- must agree, so the numbers live here and nowhere else. Values marked
 ESTIMATE are placeholders: measure them, set ``CALIBRATION_STATUS`` to the date, then verify the TCP with
 ``ros2 run polyumi_ros2 tcp_pivot_test --ros-args -p eef_frame:=hsa_tcp`` and the payload by watching for
 droop when the impedance controller activates (docs/calibration-instructions.md, "End-effector payload").
@@ -13,13 +14,16 @@ import math
 import os
 from typing import NamedTuple
 
-ARM_ID = 'fer'
+import robots
+
+# Read at import, like TOOL below: bringup.launch.py refuses a robot:= that disagrees with it.
+ARM_ID = robots.get(tool='').arm_id
 
 # What is on the flange, from HSA_TOOL in the shell that launches bringup (nuc/station_env.sh passes it
 # through): wrist = HSA wrist (default), rigid = metal base plate + rigid key mount, bare = nothing (TCP at the
 # flange, zero payload).
-TOOLS = ('wrist', 'rigid', 'bare')
-TOOL = os.environ.get('HSA_TOOL', 'wrist')
+TOOLS = robots.HSA_TOOLS
+TOOL = os.environ.get(robots.TOOL_ENV) or 'wrist'
 if TOOL not in TOOLS:
     raise ValueError(f'HSA_TOOL must be one of {TOOLS}, not {TOOL!r}')
 TCP_PARENT = f'{ARM_ID}_link8'
@@ -47,20 +51,20 @@ PLATE_HEIGHT_Z = {'wrist': WRIST_TCP_Z, 'rigid': RIGID_TCP_Z, 'bare': 0.0}[TOOL]
 TCP_XYZ = (0.0, 0.0, PLATE_HEIGHT_Z)
 
 # The yaw is a convention, not a measurement: only consumer agreement matters. -45 deg is franka's own
-# hand-mount clocking, so hsa_tcp's x is where fer_hand's x would be.
+# hand-mount clocking, so hsa_tcp's x is where <arm>_hand's x would be.
 TCP_RPY = (0.0, 0.0, -math.pi / 4)
 
 # --------------------------------------------------------------------------------------------
-# Where fer_hand_tcp comes from: the controller takes franka's O_T_EE as the pose of <arm_id>_hand_tcp
+# Where <arm>_hand_tcp comes from: the controller takes franka's O_T_EE as the pose of <arm_id>_hand_tcp
 # and converts it onto tcp_frame through TF. With no hand in the URDF, bringup.launch.py publishes
-# fer_link8 -> fer_hand_tcp statically, and it MUST equal the F_T_EE of the end effector configured in
+# <arm>_link8 -> <arm>_hand_tcp statically, and it MUST equal the F_T_EE of the end effector configured in
 # Desk: a wrong value fails nowhere, the spring is simply anchored 10 cm from where the policy thinks
 # the plate is. check_ee_frame.py verifies it at bringup; the desk_end_effector launch argument
 # overrides this per run.
 DESK_END_EFFECTOR = 'none'
 
-# fer_link8 -> fer_hand_tcp for each Desk setting, as (xyz, rpy). The hand's numbers are
-# franka_description's own (fer_link8 -> fer_hand is Rz(-45 deg); fer_hand -> fer_hand_tcp is
+# <arm>_link8 -> <arm>_hand_tcp for each Desk setting, as (xyz, rpy). The hand's numbers are
+# franka_description's own (<arm>_link8 -> <arm>_hand is Rz(-45 deg); <arm>_hand -> <arm>_hand_tcp is
 # 0.1034 m along z), composed: a yaw leaves a pure z offset untouched.
 DESK_EE_TRANSFORMS = {
     'none': ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
@@ -93,7 +97,7 @@ class PayloadPart(NamedTuple):
 
     name: str
     mass: float  # kg
-    com_z: float  # m, in fer_link8
+    com_z: float  # m, in <arm>_link8
     extents: tuple[float, float, float]  # m
 
 
@@ -129,7 +133,7 @@ PAYLOAD_PARTS: tuple[PayloadPart, ...] = {
 
 PAYLOAD_MASS = sum(part.mass for part in PAYLOAD_PARTS)  # kg
 
-# In fer_link8 directly (there is no hand frame to convert from); every part is centred on the flange axis.
+# In <arm>_link8 directly (there is no hand frame to convert from); every part is centred on the flange axis.
 PAYLOAD_COM_FLANGE = (
     0.0,
     0.0,
@@ -155,7 +159,7 @@ def static_transform_publisher_args() -> list[str]:
 
 def ee_transform(desk_end_effector: str | None = None) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
-    Return ``(xyz, rpy)`` of ``fer_link8 -> fer_hand_tcp`` for a Desk end-effector setting.
+    Return ``(xyz, rpy)`` of ``<arm>_link8 -> <arm>_hand_tcp`` for a Desk end-effector setting.
 
     :param desk_end_effector: a key of :data:`DESK_EE_TRANSFORMS`; defaults to :data:`DESK_END_EFFECTOR`.
     :raises ValueError: on a setting this file does not know, rather than guessing identity.
@@ -170,14 +174,14 @@ def ee_transform(desk_end_effector: str | None = None) -> tuple[tuple[float, flo
 
 
 def ee_transform_publisher_args(desk_end_effector: str | None = None) -> list[str]:
-    """Build the static_transform_publisher argv for ``fer_link8 -> fer_hand_tcp``."""
+    """Build the static_transform_publisher argv for ``<arm>_link8 -> <arm>_hand_tcp``."""
     xyz, rpy = ee_transform(desk_end_effector)
     return _stp_args(xyz, rpy, TCP_PARENT, EE_FRAME)
 
 
 def payload_com_flange() -> tuple[float, float, float]:
     """
-    Return the payload's centre of mass in ``fer_link8``, the frame SetLoad's F_x_Cload is in.
+    Return the payload's centre of mass in ``<arm>_link8``, the frame SetLoad's F_x_Cload is in.
 
     Already stated in that frame, so this is the identity -- kept as a function so set_payload.py
     reads every calibration module through the same three names.
@@ -187,11 +191,11 @@ def payload_com_flange() -> tuple[float, float, float]:
 
 def payload_inertia_flange() -> tuple[float, ...]:
     """
-    Build the payload's inertia tensor about its combined CoM, in ``fer_link8``, column-major.
+    Build the payload's inertia tensor about its combined CoM, in ``<arm>_link8``, column-major.
 
     Each part is a uniform solid box in the flange's axes, moved to the combined CoM with the parallel-axis
     theorem; all CoMs lie on the z axis, so the tensor stays diagonal. Computed rather than written down so it
-    cannot go stale against the masses. The FER rejects a nonzero mass carrying a zero tensor, and a sum of
+    cannot go stale against the masses. The arm rejects a nonzero mass carrying a zero tensor, and a sum of
     real boxes always satisfies the triangle inequality the firmware checks.
     """
     zc = PAYLOAD_COM_FLANGE[2]

@@ -85,6 +85,19 @@ def test_bringup_log_lines_name_the_calibration_status():
     assert hsa_calib.CALIBRATION_STATUS in hsa_calib.describe_payload()
 
 
+def test_frames_follow_the_arm(hsa_env):
+    """On the FR3 hsa_tcp hangs off fr3_link8, and the Desk end-effector frame is fr3_hand_tcp."""
+    calib = hsa_env('fr3', 'bare')
+    args = calib.static_transform_publisher_args()
+    ee = calib.ee_transform_publisher_args('hand')
+
+    assert args[args.index('--frame-id') + 1] == 'fr3_link8'
+    assert args[args.index('--child-frame-id') + 1] == 'hsa_tcp'
+    assert ee[ee.index('--frame-id') + 1] == 'fr3_link8'
+    assert ee[ee.index('--child-frame-id') + 1] == 'fr3_hand_tcp'
+    assert 'fr3_link8' in calib.describe_payload()
+
+
 def test_bare_flange_preset_puts_the_tcp_on_the_flange_with_no_payload(monkeypatch):
     """HSA_TOOL=bare is the first-session configuration: nothing bolted on, nothing to compensate."""
     import importlib

@@ -43,11 +43,18 @@ def _node_args(node: Node) -> str:
 
 
 @pytest.fixture
-def actions(monkeypatch):
-    """Return a function building launch_setup's actions for the given arguments and ROS distro."""
+def actions(monkeypatch, hsa_env):
+    """
+    Return a function building launch_setup's actions for the given arguments and ROS distro.
 
-    def build(robot='fer', use_fake_hardware='false', desk_end_effector='none', load_gripper='false', distro='kilted'):
+    HSA_ROBOT is exported as the robot (as station_env.sh does) unless ``env_robot`` says otherwise; HSA_TOOL is
+    ``tool``, unset when empty.
+    """
+
+    def build(robot='fer', use_fake_hardware='false', desk_end_effector='none', load_gripper='false', distro='kilted',
+              tool='', env_robot=None):  # fmt: skip
         monkeypatch.setenv('ROS_DISTRO', distro)
+        hsa_env(robot if env_robot is None and robot in ('fer', 'fr3') else env_robot or '', tool)
         context = LaunchContext()
         context.launch_configurations.update(
             robot=robot,
@@ -108,6 +115,37 @@ def test_fr3_robot_has_no_ee_check_and_gates_the_spawner_on_the_payload(actions)
     assert 'switch_controllers --activate franka_robot_state_broadcaster' in revive
     assert spawner.startswith('fr3_arm_controller -t joint_trajectory_controller/JointTrajectoryController')
     assert '--switch-asap' not in spawner, "Humble's spawner has no --switch-asap"
+
+
+def test_fr3_with_an_hsa_tool_chains_check_ee_then_payload_then_spawner(actions):
+    """An HSA tool on the FR3 has no hand in the URDF, so the Desk end effector is checked as on the FER."""
+    acts = actions('fr3', distro='humble', tool='bare')
+    started = _started(acts)
+    assert [s for s in started if 'check_ee_frame.py' in s and '--calib hsa_calib' in s]
+    assert not any('set_payload.py' in s for s in started)
+    (register_check,) = [a for a in acts if isinstance(a, RegisterEventHandler)][-1:]
+    (check,) = [a for a in acts if hasattr(a, 'process_description') and 'check_ee_frame.py' in _argv_text(a)]
+    (set_load,) = register_check.event_handler.handle(SimpleNamespace(returncode=0, action=check), LaunchContext())
+    assert '--calib hsa_calib' in _argv_text(set_load)
+    (register_load,) = [a for a in acts if isinstance(a, RegisterEventHandler)][:1]
+    loaded = SimpleNamespace(returncode=0, action=set_load)
+    spawner, _revive = register_load.event_handler.handle(loaded, LaunchContext())
+    assert _argv_text(spawner).startswith('fr3_arm_controller -t ')
+
+
+def test_fr3_with_an_hsa_tool_publishes_hsa_tcp_and_one_desk_hand_tcp(actions):
+    """hsa_tcp off fr3_link8 for the policy, fr3_hand_tcp from the Desk setting for O_T_EE, and none of CRB's frames."""
+    args = [_node_args(n) for n in actions('fr3', distro='humble', tool='bare') if isinstance(n, Node)]
+    assert any('--frame-id fr3_link8 --child-frame-id hsa_tcp' in a for a in args)
+    (ee,) = [a for a in args if '--child-frame-id fr3_hand_tcp' in a]
+    assert '--frame-id fr3_link8' in ee
+    assert not any('polyumi_tcp' in a or '--child-frame-id fr3_hand ' in a for a in args)
+
+
+def test_robot_that_disagrees_with_hsa_robot_is_refused(actions):
+    """hsa_calib's frames come from $HSA_ROBOT; launching the other arm would publish fer frames on the FR3."""
+    with pytest.raises(RuntimeError, match='HSA_ROBOT=fr3'):
+        actions('fr3', distro='humble', tool='bare', env_robot='fer')
 
 
 def test_mock_hardware_skips_the_gates_and_spawns_the_arm_controller_directly(actions):

@@ -91,10 +91,16 @@ case "$HSA_DDS" in
   *) echo "[station_env] ERROR: HSA_DDS must be cyclonedds or fastdds, not '$HSA_DDS'" >&2 ;;
 esac
 
-: "${HSA_TOOL:=wrist}"; export HSA_TOOL
+# What is on the flange (nuc/hsa_calib.py). The FER always carries an HSA tool, the wrist unless told otherwise. On
+# the FR3 an unset HSA_TOOL keeps CRB's gripper (tcp_calib.py); naming an HSA tool switches the frames, payload and
+# servo config to HSA's (nuc/robots.py, HSA_TOOL_OVERRIDES).
+if [ "$HSA_ROBOT" = fer ]; then : "${HSA_TOOL:=wrist}"; fi
+if [ -n "${HSA_TOOL:-}" ]; then export HSA_TOOL; else unset HSA_TOOL; fi
 echo "[station_env] HSA_ROBOT=$HSA_ROBOT ROS_DISTRO=${ROS_DISTRO:-?} franka workspace ${STATION_FRANKA_PREFIX}; overlay ${STATION_FRANKA_WS}"
-if [ "$HSA_ROBOT" = fer ]; then
+if [ -n "${HSA_TOOL:-}" ]; then
   echo "[station_env] HSA_TOOL=$HSA_TOOL (wrist = HSA wrist, rigid = metal plate + key mount, bare = nothing on the flange)"
+else
+  echo "[station_env] HSA_TOOL unset: CRB's gripper (nuc/tcp_calib.py); export HSA_TOOL=bare|rigid|wrist for an HSA tool"
 fi
 echo "[station_env] HSA_DDS=$HSA_DDS RMW=$RMW_IMPLEMENTATION ROS_DOMAIN_ID=$ROS_DOMAIN_ID CYCLONEDDS_URI=${CYCLONEDDS_URI:-}"
 unset _hsa_here

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Check that the published ``fer_hand_tcp`` is the end effector the robot has configured -- ON THE STATION, at bringup.
+Check that the published ``<arm>_hand_tcp`` is the end effector the robot has configured -- ON THE STATION, at bringup.
 
-The streaming controller converts O_T_EE onto ``hsa_tcp`` through ``fer_hand_tcp``, a static transform
+The streaming controller converts O_T_EE onto ``hsa_tcp`` through ``<arm>_hand_tcp``, a static transform
 this repo publishes that must equal the F_T_EE set in Desk; nothing else notices when it does not
-(nuc/hsa_calib.py, "Where fer_hand_tcp comes from"). The same Desk setting carries an end-effector MASS
+(nuc/hsa_calib.py, "Where <arm>_hand_tcp comes from"). The same Desk setting carries an end-effector MASS
 that the FCI adds to the SetLoad payload, so a mass entered in Desk that the calib module does not expect
 is compensated twice and shows up only as a phantom external force. One-shot: read
 ``/franka_robot_state_broadcaster/robot_state`` once, compare ``f_t_ee`` with hsa_calib's transform and
@@ -63,7 +63,7 @@ def compare(position, quaternion, expected_xyz, expected_rpy) -> tuple[bool, str
     angle = 2.0 * math.acos(min(1.0, dot))
     detail = (
         f'robot F_T_EE: xyz=({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}) m, '
-        f'{math.degrees(angle):.2f} deg from the published fer_hand_tcp; '
+        f'{math.degrees(angle):.2f} deg from the published <arm>_hand_tcp; '
         f'translation differs by {dpos * 1e3:.1f} mm'
     )
     return dpos <= POSITION_TOL_M and angle <= ANGLE_TOL_RAD, detail

@@ -1,0 +1,7 @@
+# Frames for the FR3 with an HSA tool on its flange (robot:=fr3, HSA_TOOL set on the NUC; nuc/hsa_calib.py): the
+# same hsa_tcp an HSA policy is trained in. Select with frames:=fr3_hsa. Must match nuc/robots.py.
+/**:
+  ros__parameters:
+    base_frame: fr3_link0
+    tcp_frame: hsa_tcp
+    eef_frame: hsa_tcp

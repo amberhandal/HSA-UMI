@@ -168,6 +168,15 @@ def test_fer_never_starts_a_gripper_driver(actions):
     assert _drivers(actions('fer', gripper='hand', execute_gripper='true')) == set()
 
 
+def test_an_hsa_tool_on_the_fr3_servos_hsa_tcp_and_starts_no_gripper(actions, monkeypatch):
+    """With HSA_TOOL set the FR3 carries no CRB gripper, and the servo converts onto hsa_tcp."""
+    monkeypatch.setenv('HSA_TOOL', 'bare')
+    acts = actions('fr3', gripper='faulhaber', execute_gripper='true', distro='humble')
+    (spawner,) = [a for a in acts if isinstance(a, Node) and 'spawner' in str(a.node_executable)]
+    assert 'hsa_controllers_fr3.yaml' in ' '.join(str(a) for a in spawner._Node__arguments)
+    assert _drivers(acts) == set()
+
+
 def test_named_home_pose_gets_its_own_file(actions):
     """home_pose:=key_in_hole keeps that task's start pose apart from every other task's."""
     cmds = [_argv_text(a) for a in actions('fer', home_pose='key_in_hole') if isinstance(a, ExecuteProcess)]

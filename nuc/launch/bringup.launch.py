@@ -5,6 +5,7 @@ Run on the box that drives the arm, after enabling FCI in Desk:
 
     ros2 launch nuc/launch/bringup.launch.py robot:=fer      # the station's FER (default: $HSA_ROBOT, else fer)
     ros2 launch nuc/launch/bringup.launch.py robot:=fr3      # the CRB NUC's FR3
+    HSA_TOOL=bare ros2 launch nuc/launch/bringup.launch.py robot:=fr3   # the FR3 with an HSA tool (hsa_calib.py)
     ros2 launch nuc/launch/bringup.launch.py robot:=fer desk_end_effector:=hand   # if Desk says Franka Hand
     ros2 launch nuc/launch/bringup.launch.py robot:=fer use_fake_hardware:=true   # no robot, anywhere
 
@@ -107,9 +108,10 @@ def flange_frames(robot: robots.Robot, desk_end_effector: str, load_gripper: boo
     Republish the fixed frames the URDF lost with load_gripper:=false.
 
     The streaming controller takes O_T_EE as the pose of <arm_id>_hand_tcp, so that frame must exist.
-    FER: no hand, so <arm_id>_link8 -> <arm_id>_hand_tcp is published to match the Desk end-effector
-    setting (verified against the robot by check_ee_frame.py). FR3: the hand is there but franka_gripper
-    is not, so the whole hand subtree is republished (nuc/tcp_calib.py).
+    An HSA tool (the FER, or the FR3 with HSA_TOOL): no hand, so <arm_id>_link8 -> <arm_id>_hand_tcp is
+    published to match the Desk end-effector setting (verified against the robot by check_ee_frame.py). The FR3
+    with CRB's gripper: the hand is there but franka_gripper is not, so the whole hand subtree is republished
+    (nuc/tcp_calib.py).
     """
     if robot.flange_frames == 'desk_ee':
         return [
@@ -128,6 +130,13 @@ def launch_setup(context):
     """Build the session for the robot named by the `robot` argument."""
     robot = robots.get(LaunchConfiguration('robot').perform(context))
     calib = importlib.import_module(robot.calib)
+    # hsa_calib names its frames after $HSA_ROBOT when imported, and set_payload.py / check_ee_frame.py import it
+    # afresh from the same environment, so a robot:= that disagrees would publish and check another arm's frames.
+    if not calib.TCP_PARENT.startswith(f'{robot.arm_id}_'):
+        raise RuntimeError(
+            f'robot:={robot.name}, but nuc/{robot.calib}.py builds its frames off {calib.TCP_PARENT}: '
+            f'export {robots.ROBOT_ENV}={robot.name} and source nuc/station_env.sh again.'
+        )
     robot_ip = LaunchConfiguration('robot_ip').perform(context) or robot.robot_ip
     load_gripper = LaunchConfiguration('load_gripper').perform(context)
     use_fake_hardware = LaunchConfiguration('use_fake_hardware').perform(context)
@@ -261,8 +270,9 @@ def generate_launch_description():
                 'desk_end_effector',
                 default_value=hsa_calib.DESK_END_EFFECTOR,
                 choices=sorted(hsa_calib.DESK_EE_TRANSFORMS),
-                description='FER only: the end effector Desk is configured with; sets fer_link8 -> fer_hand_tcp '
-                '(the frame franka reports O_T_EE in) and is verified against the robot at bringup.',
+                description='HSA tools only (the FER, or the FR3 with HSA_TOOL set): the end effector Desk is '
+                'configured with; sets <arm>_link8 -> <arm>_hand_tcp (the frame franka reports O_T_EE in) and is '
+                'verified against the robot at bringup.',
             ),
             OpaqueFunction(function=launch_setup),
         ]

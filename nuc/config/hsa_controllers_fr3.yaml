@@ -1,0 +1,36 @@
+# The streaming controller for an HSA tool on the FR3 (robot:=fr3 with HSA_TOOL set, nuc/robots.py).
+#
+# polyumi_controllers.yaml with one change: tcp_frame is hsa_tcp (nuc/hsa_calib.py), the frame an HSA policy is
+# trained in. Gains, nullspace and collision thresholds are the FR3's, unchanged; why each number is what it is
+# lives in polyumi_controllers.yaml and upstream in
+# external/franka_streaming_impedance_controller/config/controllers.example.yaml.
+
+# There is deliberately no `type` here: the NUC runs Humble, whose spawner takes it with -t.
+polyumi_cartesian_impedance_controller:
+  ros__parameters:
+    arm_id: fr3
+    base_frame: fr3_link0
+    tcp_frame: hsa_tcp
+    target_topic: /polyumi/target_poses_traj
+
+    translational_stiffness: 2000.0
+    translational_damping: 89.0
+    rotational_stiffness: 150.0
+    rotational_damping: 7.0
+    translational_clip: 0.01
+    rotational_clip: 0.05
+
+    translational_ki: 0.0
+    rotational_ki: 0.0
+
+    nullspace_stiffness: 0.2
+    joint1_nullspace_stiffness: 100.0
+
+    max_pos_speed: 1.0
+    max_rot_speed: 3.14
+
+    collision:
+      lower_torque_thresholds: [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds: [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_force_thresholds: [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds: [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
