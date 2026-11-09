@@ -4,6 +4,8 @@
 #     ./rollout_session.sh ep025                                   # trials for checkpoint 'ep025' of data/key_in_hole/wrist/v1
 #     ./rollout_session.sh ep045 data/key_in_hole/wrist/v1         # another checkpoint / dataset folder
 #     WRIST=0 ./rollout_session.sh ep045 data/key_in_hole/rigid/v1 # no wrist window, no wrist channels on the wire
+#     ARDUCAM=0 ./rollout_session.sh noarducam_ep025               # task=hsa_umi_wrist_no_arducam: wrist state only, no baseplate camera
+#     ARDUCAM=plate ./rollout_session.sh plate_ep030               # task=hsa_umi_wrist_plate: wrist state + plate pose, no camera image
 #     ./rollout_session.sh --kill                                  # ^C every pane, then close the session
 #
 # Everything lands in <dataset>/eval/<checkpoint>/: ledger.csv (one row per trial), bags/r_NN (one bag per
@@ -41,6 +43,10 @@ if [ "${1:-}" = --kill ]; then
 fi
 
 WRIST="${WRIST:-1}"
+# 0 for a checkpoint trained without the baseplate camera (no camera1_rgb, no plate pose): the wrist stack starts
+# without the camera and the client sends only the wrist state. plate: the camera runs for the plate pose but its
+# image is not sent (task=hsa_umi_wrist_plate).
+ARDUCAM="${ARDUCAM:-1}"
 # The Arducam OV9281 by its stable path: /dev/videoN moves whenever the RealSense re-enumerates first.
 WRIST_CAM="${WRIST_CAM:-/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam_OV9281_USB_Camera_UC762-video-index0}"
 CKPT_LABEL="${1:?usage: $0 <checkpoint label, e.g. ep025> [dataset dir]}"
@@ -77,7 +83,9 @@ ENV="export HSA_ROBOT=$ROBOT && source setup_franka_env.sh"
 (cd "$REPO_DIR" && HSA_ROBOT="$ROBOT" bash -c 'source setup_franka_env.sh' >/dev/null) || true
 
 WRIST_FLAGS=""
-[ "$WRIST" = 1 ] && WRIST_FLAGS=" send_wrist:=true send_plate:=true send_camera1:=true"
+if [ "$WRIST" = 1 ] && [ "$ARDUCAM" = 1 ]; then WRIST_FLAGS=" send_wrist:=true send_plate:=true send_camera1:=true"
+elif [ "$WRIST" = 1 ] && [ "$ARDUCAM" = plate ]; then WRIST_FLAGS=" send_wrist:=true send_plate:=true"
+elif [ "$WRIST" = 1 ]; then WRIST_FLAGS=" send_wrist:=true"; fi
 # The client starts the RealSense itself (camera:=true, the launch default), so no separate camera pane.
 CLIENT="ros2 launch hsa_ros2 inference.launch.xml robot:=$ROBOT inference_server_url:=$INFERENCE_URL execute_motion:=$EXECUTE_MOTION max_image_age_s:=$MAX_IMAGE_AGE_S send_wrench:=true wrench_topic:=$WRENCH_TOPIC$WRIST_FLAGS"
 # Numbered when it runs, so Up + Enter after a ^C opens the next r_NN.
@@ -88,6 +96,10 @@ LEDGER="ros2 run hsa_ros2 rollout_ledger --ros-args -p ledger:=$REPO_DIR/$EVAL/l
 WRIST_LAUNCH="sudo modprobe gs_usb && sudo ip link set can0 up type can bitrate 500000 && sudo ip link set can0 txqueuelen 1000; ros2 launch wrist_control wrist_control.launch.py show_window:=false video_device:=$WRIST_CAM"
 WRIST_GUI="ros2 run wrist_control joint_commander_gui"
 WRIST_CHECK="ros2 topic hz /hsa/wrist/state /platform_pose /tracking_cam/image_raw"
+if [ "$ARDUCAM" = 0 ]; then
+  WRIST_LAUNCH="${WRIST_LAUNCH/ video_device:=$WRIST_CAM/ camera:=false}"
+  WRIST_CHECK="ros2 topic hz /hsa/wrist/state"
+fi
 PLOT_LAST="ros2_ws/src/hsa_ros2/scripts/plot_rollout.py \$(ls -td $EVAL/bags/r_* | head -1)"
 PLOT_OUTCOMES="ros2_ws/src/hsa_ros2/scripts/plot_outcomes.py $EVAL/ledger.csv --out $EVAL/figures"
 THROTTLE="ros2 run topic_tools throttle messages $WRENCH_SRC 100 $WRENCH_TOPIC"
